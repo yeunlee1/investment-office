@@ -447,7 +447,8 @@ class ScheduledAnalysisService:
         )
         if self._schedule_cache is None:
             self._latest_schedules()
-        assert self._schedule_cache is not None
+        if self._schedule_cache is None:
+            raise ScheduledAnalysisDataError("분석 예약 캐시를 초기화하지 못했습니다.")
         self._schedule_cache[item.id] = item
         event_payload = JSON_OBJECT_ADAPTER.validate_python(
             {

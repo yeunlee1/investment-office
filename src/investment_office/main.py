@@ -270,6 +270,7 @@ def create_app(
         )
         app.state.broker = broker
         app.state.tasks = set()
+        app.state.schedule_creation_lock = asyncio.Lock()
         app.state.scheduler_status = {
             "status": "starting",
             "error": None,
@@ -402,6 +403,28 @@ def create_app(
         candidate = committee(request).storage.get_candidate(item.candidate_id)
         payload["thesis"] = candidate.thesis if candidate is not None else None
         return payload
+
+    def find_matching_active_schedule(
+        request: Request,
+        *,
+        ticker: str,
+        thesis: str | None,
+        scheduled_for: AwareDatetime,
+    ) -> ScheduledAnalysis | None:
+        active_statuses = {
+            ScheduledAnalysisStatus.SCHEDULED,
+            ScheduledAnalysisStatus.CLAIMED,
+            ScheduledAnalysisStatus.DISPATCHED,
+        }
+        for item in scheduled_analyses(request).list_schedules():
+            if item.status not in active_statuses:
+                continue
+            if item.ticker != ticker or item.scheduled_for != scheduled_for:
+                continue
+            candidate = committee(request).storage.get_candidate(item.candidate_id)
+            if candidate is not None and candidate.thesis == thesis:
+                return item
+        return None
 
     def build_run_with_schedule(request: Request, run_id: UUID) -> dict[str, Any]:
         payload = committee(request).build_run_payload(run_id)
@@ -721,23 +744,46 @@ def create_app(
             )
 
         investment_service = committee(request)
-        run = await investment_service.create_analysis(
-            payload.ticker,
-            payload.thesis,
-            workflow="scheduled",
-        )
-        try:
-            item = await scheduled_analyses(request).schedule_run(
-                run.id,
-                payload.scheduled_for,
+        schedule_service = scheduled_analyses(request)
+        creation_lock = cast(asyncio.Lock, request.app.state.schedule_creation_lock)
+        async with creation_lock:
+            existing = find_matching_active_schedule(
+                request,
+                ticker=payload.ticker,
+                thesis=payload.thesis,
+                scheduled_for=payload.scheduled_for,
             )
-        except ScheduledAnalysisValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except ScheduledAnalysisConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if existing is not None:
+                return {
+                    "schedule": build_schedule_payload(request, existing),
+                    "run": build_run_with_schedule(request, existing.analysis_run_id),
+                    "deduplicated": True,
+                }
+            run = await investment_service.create_analysis(
+                payload.ticker,
+                payload.thesis,
+                workflow="scheduled",
+            )
+            try:
+                item = await schedule_service.schedule_run(
+                    run.id,
+                    payload.scheduled_for,
+                )
+            except Exception as exc:
+                with suppress(Exception):
+                    await investment_service.cancel_queued_analysis(
+                        run.id,
+                        f"예약 등록 실패. {str(exc)[:3_900]}",
+                    )
+                if isinstance(exc, ScheduledAnalysisValidationError):
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+                if isinstance(exc, ScheduledAnalysisConflictError):
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
+                raise
         return {
             "schedule": build_schedule_payload(request, item),
             "run": build_run_with_schedule(request, run.id),
+            "deduplicated": False,
         }
 
     @app.get("/api/schedules/{schedule_id}")

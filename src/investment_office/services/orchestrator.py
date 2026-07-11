@@ -137,6 +137,35 @@ class InvestmentCommittee:
         )
         return run
 
+    async def cancel_queued_analysis(self, run_id: UUID, reason: str) -> AnalysisRun:
+        """후속 등록 실패로 실행할 수 없는 대기 분석을 취소 상태로 확정한다."""
+
+        normalized_reason = reason.strip()
+        if not normalized_reason:
+            raise ValueError("분석 취소 사유는 비어 있을 수 없습니다.")
+        run = self._require_run(run_id)
+        candidate = self._require_candidate(run.candidate_id)
+        if run.status is not AnalysisRunStatus.QUEUED:
+            raise AnalysisRunConflictError("대기 중인 분석만 등록 실패로 취소할 수 있습니다.")
+        cancelled_at = utc_now()
+        run.status = AnalysisRunStatus.CANCELLED
+        run.error_message = normalized_reason[:4_000]
+        run.completed_at = cancelled_at
+        run.updated_at = cancelled_at
+        candidate.status = CandidateStatus.ARCHIVED
+        candidate.updated_at = cancelled_at
+        self.storage.save_analysis_run(run)
+        self.storage.save_candidate(candidate)
+        await self._record_event(
+            EventType.STATUS_CHANGED,
+            "후속 등록 실패로 대기 분석을 취소했습니다.",
+            candidate=candidate,
+            run=run,
+            stream_type="fault",
+            payload={"status": "cancelled", "error": run.error_message},
+        )
+        return run
+
     async def run_analysis(self, run_id: UUID) -> None:
         """한 분석 실행을 완료하거나 실패 상태로 확정한다."""
 

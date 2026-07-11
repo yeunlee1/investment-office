@@ -18,7 +18,13 @@ from pydantic import BaseModel
 from starlette.types import Message, Scope
 
 from investment_office.config import Settings
-from investment_office.domain import AnalysisRun
+from investment_office.domain import (
+    AnalysisRun,
+    AnalysisRunStatus,
+    CandidateStatus,
+    Snapshot,
+    SnapshotKind,
+)
 from investment_office.main import _log_background_task_failure, create_app
 from investment_office.services.market_data import YahooFinanceClient
 from investment_office.services.orchestrator import AnalysisProvider, RiskFunction
@@ -76,12 +82,23 @@ class FlakyScheduleStorage(InMemoryStorage):
     def __init__(self) -> None:
         super().__init__()
         self.fail_next_run_lookup = False
+        self.fail_next_schedule_snapshot = False
 
     def get_analysis_run(self, run_id: UUID) -> AnalysisRun | None:
         if self.fail_next_run_lookup:
             self.fail_next_run_lookup = False
             raise RuntimeError("temporary storage outage")
         return super().get_analysis_run(run_id)
+
+    def save_snapshot(self, snapshot: Snapshot) -> Snapshot:
+        if (
+            self.fail_next_schedule_snapshot
+            and snapshot.kind is SnapshotKind.AGENT_STATE
+            and snapshot.data.get("record_type") == "scheduled_analysis"
+        ):
+            self.fail_next_schedule_snapshot = False
+            raise RuntimeError("temporary schedule storage outage")
+        return super().save_snapshot(snapshot)
 
 
 class FakeProvider:
@@ -404,6 +421,7 @@ async def test_schedule_and_decision_archive_apis_preserve_future_and_past_runs(
             )
             assert created.status_code == 202
             body = created.json()
+            assert body["deduplicated"] is False
             schedule_id = body["schedule"]["id"]
             run_id = body["schedule"]["run_id"]
             assert body["schedule"]["status"] == "scheduled"
@@ -432,6 +450,61 @@ async def test_schedule_and_decision_archive_apis_preserve_future_and_past_runs(
             cancelled = await client.post(f"/api/schedules/{schedule_id}/cancel", json={})
             assert cancelled.status_code == 200
             assert cancelled.json()["schedule"]["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_identical_concurrent_schedule_requests_are_deduplicated() -> None:
+    storage = InMemoryStorage()
+    app, _ = make_app(storage=storage)
+
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+            payload = {
+                "ticker": "AAPL",
+                "thesis": "동일 예약 요청을 한 건으로 처리한다.",
+                "scheduled_for": (datetime.now(UTC) + timedelta(minutes=10)).isoformat(),
+            }
+            first, second = await asyncio.gather(
+                client.post("/api/schedules", json=payload),
+                client.post("/api/schedules", json=payload),
+            )
+
+            assert first.status_code == 202
+            assert second.status_code == 202
+            assert first.json()["schedule"]["id"] == second.json()["schedule"]["id"]
+            assert first.json()["run"]["run_id"] == second.json()["run"]["run_id"]
+            assert sorted([first.json()["deduplicated"], second.json()["deduplicated"]]) == [
+                False,
+                True,
+            ]
+            assert len(storage.list_analysis_runs()) == 1
+
+
+@pytest.mark.asyncio
+async def test_schedule_storage_failure_cancels_created_run() -> None:
+    storage = FlakyScheduleStorage()
+    app, _ = make_app(storage=storage)
+
+    async with app.router.lifespan_context(app):
+        storage.fail_next_schedule_snapshot = True
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+            response = await client.post(
+                "/api/schedules",
+                json={
+                    "ticker": "MSFT",
+                    "scheduled_for": (datetime.now(UTC) + timedelta(minutes=10)).isoformat(),
+                },
+            )
+
+            assert response.status_code == 500
+            runs = storage.list_analysis_runs()
+            assert len(runs) == 1
+            assert runs[0].status is AnalysisRunStatus.CANCELLED
+            candidate = storage.get_candidate(runs[0].candidate_id)
+            assert candidate is not None
+            assert candidate.status is CandidateStatus.ARCHIVED
 
 
 @pytest.mark.asyncio

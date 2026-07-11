@@ -56,6 +56,8 @@ PRICE_TECHNICAL_SECTION_ID = "market.price.technical"
 VALUATION_SECTION_ID = "company.valuation"
 INDEPENDENT_NEWS_SECTION_ID = "company.independent_news"
 INTEGRITY_SECTION_ID = "pipeline.integrity"
+COMMON_REQUIRED_MACRO_SECTION_IDS = tuple(SECTION_TITLES)
+KR_REQUIRED_MACRO_SECTION_ID = "macro.kr.ecos"
 
 
 class MacroCollector(Protocol):
@@ -208,7 +210,7 @@ class ResearchPipeline:
             cutoff=bundle_cutoff,
             max_age=self._price_max_age,
         )
-        macro_part = _macro_part(macro_result)
+        macro_part = _macro_part(macro_result, instrument.market)
         company_part = _company_part(
             company_result,
             cutoff=observation_cutoff,
@@ -844,13 +846,33 @@ def _snapshot_mismatch(instrument: InstrumentRef, snapshot: EODSnapshot) -> str 
     return None
 
 
-def _macro_part(result: MacroContextResult) -> _CollectedPart:
+def _macro_part(
+    result: MacroContextResult,
+    market: MarketId,
+) -> _CollectedPart:
+    required_section_ids: list[str] = list(COMMON_REQUIRED_MACRO_SECTION_IDS)
+    if market is MarketId.KR:
+        required_section_ids.append(KR_REQUIRED_MACRO_SECTION_ID)
+    existing_section_ids = {section.section_id for section in result.sections}
+    missing_required = tuple(
+        section_id
+        for section_id in required_section_ids
+        if section_id not in existing_section_ids
+    )
+    sections = tuple(
+        section.model_copy(update={"required": True})
+        if section.section_id in required_section_ids and not section.required
+        else section
+        for section in result.sections
+    )
     return _CollectedPart(
         sources=result.sources,
         facts=result.facts,
-        sections=result.sections,
+        sections=sections,
         stale_fact_ids=result.stale_fact_ids,
-        missing_required_sections=result.future_section_ids,
+        missing_required_sections=_unique(
+            (*result.future_section_ids, *missing_required)
+        ),
     )
 
 

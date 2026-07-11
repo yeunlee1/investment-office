@@ -70,6 +70,19 @@ _DISABLED_CODEX_FEATURES = (
 )
 
 
+def build_codex_child_environment(
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """코덱스 인증과 실행에 필요한 비민감 환경 변수만 반환한다."""
+
+    source = os.environ if environment is None else environment
+    return {
+        name: value
+        for name, value in source.items()
+        if name.upper() in _CODEX_CHILD_ENV_ALLOWLIST or name.upper().startswith("LC_")
+    }
+
+
 class CodexProviderError(RuntimeError):
     """Base error for every explicit Codex provider failure."""
 
@@ -385,11 +398,7 @@ class CodexProvider:
     def _build_child_environment() -> dict[str, str]:
         """코덱스 인증과 실행에 필요한 비민감 환경 변수만 전달한다."""
 
-        return {
-            name: value
-            for name, value in os.environ.items()
-            if name.upper() in _CODEX_CHILD_ENV_ALLOWLIST or name.upper().startswith("LC_")
-        }
+        return build_codex_child_environment()
 
     async def _read_limited_stream(
         self,

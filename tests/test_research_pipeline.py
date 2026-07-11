@@ -253,6 +253,13 @@ def _macro_result(
         ("brent_change", "브렌트유 현물 가격 30일 변화", 2, "percent", "macro.commodities"),
         ("bitcoin", "비트코인 미국 달러 가격", 70_000, "usd_per_bitcoin", "macro.liquidity"),
         ("bitcoin_change", "비트코인 미국 달러 가격 30일 변화", 12, "percent", "macro.liquidity"),
+        (
+            "cpi",
+            "미국 소비자물가지수",
+            320,
+            "index_1982_1984_100",
+            "macro.growth_inflation",
+        ),
     )
     facts = tuple(
         _fact(f"macro:{key}", source.source_id, metric, value, unit)
@@ -275,6 +282,7 @@ def _macro_result(
             "macro.volatility",
             "macro.commodities",
             "macro.liquidity",
+            "macro.growth_inflation",
         )
     )
     return MacroContextResult(
@@ -450,6 +458,35 @@ async def test_stale_macro_facts_are_not_used_for_regime_signals() -> None:
         "macro:vix",
         "macro:vix_change",
     }
+
+
+@pytest.mark.asyncio
+async def test_missing_required_macro_section_is_not_allowed_to_fail_open() -> None:
+    instrument = _instrument()
+    macro = _macro_result()
+    macro_without_liquidity = MacroContextResult(
+        sources=macro.sources,
+        facts=macro.facts,
+        sections=tuple(
+            section
+            for section in macro.sections
+            if section.section_id != "macro.liquidity"
+        ),
+    )
+    pipeline = ResearchPipeline(
+        macro_client=_MacroClient(macro_without_liquidity),
+        company_client=_CompanyClient(_company_result(instrument)),
+        now_factory=lambda: COLLECTED_AT,
+    )
+
+    result = await pipeline.collect(instrument, _snapshot())
+
+    assert result.bundle.quality.analysis_eligible is False
+    assert "macro.liquidity" in result.bundle.quality.missing_required_sections
+    assert any(
+        "macro.liquidity" in reason
+        for reason in result.bundle.quality.blocking_reasons
+    )
 
 
 @pytest.mark.asyncio

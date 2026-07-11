@@ -361,6 +361,12 @@ def create_app(
     ) -> Response:
         """브라우저의 교차 출처 요청이 로컬 변경 API를 호출하지 못하게 한다."""
 
+        client_host = request.client.host.casefold() if request.client is not None else None
+        if client_host is not None and client_host not in LOOPBACK_HOSTS:
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"detail": "로컬 컴퓨터 밖에서는 이 API에 접근할 수 없습니다."},
+            )
         is_mutation = request.method in {"POST", "PUT", "PATCH", "DELETE"}
         if request.url.path.startswith("/api/") and is_mutation:
             origin = request.headers.get("origin")

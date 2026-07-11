@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
@@ -29,6 +30,7 @@ SCHEDULE_TIMEZONE: Literal["Asia/Seoul"] = "Asia/Seoul"
 KST = timezone(timedelta(hours=9), name="KST")
 
 JSON_OBJECT_ADAPTER = TypeAdapter(dict[str, JsonValue])
+logger = logging.getLogger(__name__)
 
 
 class ScheduledAnalysisStatus(StrEnum):
@@ -470,19 +472,31 @@ class ScheduledAnalysisService:
             analysis_run_id=item.analysis_run_id,
             payload=event_payload,
         )
-        self.storage.append_event(event)
-        await self.broker.publish(
-            {
-                "event_id": str(event.id),
-                "type": STATE_RECORD_TYPE,
-                "event_type": event.event_type.value,
-                "message": event.message,
-                "candidate_id": str(item.candidate_id),
-                "run_id": str(item.analysis_run_id),
-                "created_at": event.created_at.isoformat(),
-                **event_payload,
-            }
-        )
+        try:
+            self.storage.append_event(event)
+        except Exception:
+            logger.exception(
+                "예약 이벤트 저장에 실패했습니다.",
+                extra={"analysis_run_id": str(item.analysis_run_id)},
+            )
+        try:
+            await self.broker.publish(
+                {
+                    "event_id": str(event.id),
+                    "type": STATE_RECORD_TYPE,
+                    "event_type": event.event_type.value,
+                    "message": event.message,
+                    "candidate_id": str(item.candidate_id),
+                    "run_id": str(item.analysis_run_id),
+                    "created_at": event.created_at.isoformat(),
+                    **event_payload,
+                }
+            )
+        except Exception:
+            logger.exception(
+                "예약 실시간 이벤트 발행에 실패했습니다.",
+                extra={"analysis_run_id": str(item.analysis_run_id)},
+            )
 
     def _transition(self, item: ScheduledAnalysis, **updates: Any) -> ScheduledAnalysis:
         payload = item.model_dump(mode="python")

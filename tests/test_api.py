@@ -228,6 +228,18 @@ async def test_local_api_rejects_untrusted_hosts_and_cross_origin_mutations() ->
             )
             assert same_origin.status_code == 202
 
+        remote_transport = httpx.ASGITransport(
+            app=app,
+            client=("203.0.113.10", 51_234),
+        )
+        async with httpx.AsyncClient(
+            transport=remote_transport,
+            base_url="http://127.0.0.1",
+        ) as remote_client:
+            remote_response = await remote_client.get("/api/state")
+            assert remote_response.status_code == 403
+            assert "로컬 컴퓨터 밖" in remote_response.json()["detail"]
+
 
 @pytest.mark.asyncio
 async def test_analysis_api_returns_202_then_supports_query_and_single_review() -> None:

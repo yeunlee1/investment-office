@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ from investment_office.storage import Storage
 
 JsonDict = dict[str, JsonValue]
 JSON_DICT_ADAPTER = TypeAdapter(JsonDict)
+logger = logging.getLogger(__name__)
 
 COMMITTEE_ROLES = (
     AgentRole.FUNDAMENTAL,
@@ -797,21 +799,33 @@ class CommitteeBroker:
             analysis_run_id=meeting.analysis_run_id,
             payload=event_payload,
         )
-        self.storage.append_event(event)
-        if self.event_broker is not None:
-            await self.event_broker.publish(
-                {
-                    "event_id": str(event.id),
-                    "type": "committee",
-                    "event_type": event.event_type.value,
-                    "message": event.message,
-                    "candidate_id": str(meeting.candidate_id),
-                    "run_id": str(meeting.analysis_run_id),
-                    "session_id": str(meeting.session_id),
-                    "created_at": event.created_at.isoformat(),
-                    **payload,
-                }
+        try:
+            self.storage.append_event(event)
+        except Exception:
+            logger.exception(
+                "회의 이벤트 저장에 실패했습니다.",
+                extra={"analysis_run_id": str(meeting.analysis_run_id)},
             )
+        if self.event_broker is not None:
+            try:
+                await self.event_broker.publish(
+                    {
+                        "event_id": str(event.id),
+                        "type": "committee",
+                        "event_type": event.event_type.value,
+                        "message": event.message,
+                        "candidate_id": str(meeting.candidate_id),
+                        "run_id": str(meeting.analysis_run_id),
+                        "session_id": str(meeting.session_id),
+                        "created_at": event.created_at.isoformat(),
+                        **payload,
+                    }
+                )
+            except Exception:
+                logger.exception(
+                    "회의 실시간 이벤트 발행에 실패했습니다.",
+                    extra={"analysis_run_id": str(meeting.analysis_run_id)},
+                )
 
     def _require_active(self, run_id: UUID) -> _ActiveMeeting:
         meeting = self._active_by_run.get(run_id)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
@@ -41,6 +42,7 @@ RESUME_SEMANTICS = (
 
 JSON_OBJECT_ADAPTER = TypeAdapter(dict[str, JsonValue])
 JSON_CONTEXT_ADAPTER = TypeAdapter(list[dict[str, JsonValue]])
+logger = logging.getLogger(__name__)
 
 
 class WorkItemStatus(StrEnum):
@@ -551,19 +553,31 @@ class WorkItemService:
             analysis_run_id=item.analysis_run_id,
             payload=event_payload,
         )
-        self.storage.append_event(event)
-        await self.broker.publish(
-            {
-                "event_id": str(event.id),
-                "type": "work_item",
-                "event_type": event.event_type.value,
-                "message": event.message,
-                "candidate_id": str(item.candidate_id),
-                "run_id": str(item.analysis_run_id),
-                "created_at": event.created_at.isoformat(),
-                **event_payload,
-            }
-        )
+        try:
+            self.storage.append_event(event)
+        except Exception:
+            logger.exception(
+                "수동 업무 이벤트 저장에 실패했습니다.",
+                extra={"analysis_run_id": str(item.analysis_run_id)},
+            )
+        try:
+            await self.broker.publish(
+                {
+                    "event_id": str(event.id),
+                    "type": "work_item",
+                    "event_type": event.event_type.value,
+                    "message": event.message,
+                    "candidate_id": str(item.candidate_id),
+                    "run_id": str(item.analysis_run_id),
+                    "created_at": event.created_at.isoformat(),
+                    **event_payload,
+                }
+            )
+        except Exception:
+            logger.exception(
+                "수동 업무 실시간 이벤트 발행에 실패했습니다.",
+                extra={"analysis_run_id": str(item.analysis_run_id)},
+            )
 
     @staticmethod
     def _transition(item: WorkItem, **updates: Any) -> WorkItem:

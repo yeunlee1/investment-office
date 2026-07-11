@@ -189,6 +189,15 @@ class CodexProvider:
 
         expected_role = role.strip()
         expected_ticker = ticker.strip().upper()
+        data_gap_result = self._role_data_gap_result(
+            expected_role,
+            expected_ticker,
+            snapshot,
+        )
+        if data_gap_result is not None:
+            await self._emit_status("started", expected_role, expected_ticker)
+            await self._emit_status("completed", expected_role, expected_ticker)
+            return data_gap_result
         try:
             prompt = build_analysis_prompt(expected_role, expected_ticker, snapshot, context)
         except ValueError as exc:
@@ -210,6 +219,34 @@ class CodexProvider:
 
         await self._emit_status("completed", expected_role, expected_ticker)
         return result
+
+    @staticmethod
+    def _role_data_gap_result(
+        role: str,
+        ticker: str,
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        required_key = {"fundamental": "fundamentals", "news": "news"}.get(role)
+        if required_key is None:
+            return None
+        source_value = snapshot.get(required_key)
+        if isinstance(source_value, (dict, list)) and source_value:
+            return None
+        source_name = "재무·공시" if role == "fundamental" else "뉴스"
+        data_gap = f"검증 가능한 {source_name} 원문과 출처가 입력되지 않았습니다."
+        return AnalysisResult(
+            role=role,
+            ticker=ticker,
+            stance="neutral",
+            confidence=0.0,
+            summary=f"{data_gap} 이 역할의 방향성 판단을 중립으로 고정합니다.",
+            key_points=["제공된 가격·거래량 자료만으로 역할 범위를 추정하지 않았습니다."],
+            evidence=[],
+            risks=["자료 없이 결론을 만들면 투자 판단이 왜곡될 수 있습니다."],
+            recommendation="검증 가능한 자료가 공급될 때까지 최종 판단에서 제외합니다.",
+            data_gaps=[data_gap],
+            invalidations=[f"검증 가능한 {source_name} 자료가 공급되면 다시 분석합니다."],
+        ).model_dump(mode="json")
 
     async def _analyze_in_temporary_directory(
         self,

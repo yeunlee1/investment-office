@@ -200,6 +200,34 @@ async def test_analyze_uses_saved_auth_read_only_json_and_callbacks(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("role", "source_name"),
+    [("fundamental", "재무·공시"), ("news", "뉴스")],
+)
+async def test_missing_role_source_returns_neutral_gap_without_process(
+    monkeypatch: pytest.MonkeyPatch,
+    snapshot: dict[str, Any],
+    role: str,
+    source_name: str,
+) -> None:
+    async def should_not_spawn(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise AssertionError("자료가 없을 때 코덱스 프로세스를 실행하면 안 됩니다.")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", should_not_spawn)
+    statuses: list[dict[str, Any]] = []
+    provider = CodexProvider(command="codex", status_callback=statuses.append)
+
+    result = await provider.analyze(role, "AAPL", snapshot, [])
+
+    assert result["stance"] == "neutral"
+    assert result["confidence"] == 0.0
+    assert result["evidence"] == []
+    assert source_name in result["data_gaps"][0]
+    assert [event["status"] for event in statuses] == ["started", "completed"]
+
+
+@pytest.mark.asyncio
 async def test_analyze_rejects_non_json_result(
     monkeypatch: pytest.MonkeyPatch,
     snapshot: dict[str, Any],

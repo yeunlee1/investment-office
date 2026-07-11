@@ -94,6 +94,7 @@ def valid_result() -> dict[str, Any]:
         "evidence": [
             {
                 "claim": "입력에 현재 가격이 포함되어 있다.",
+                "fact_id": None,
                 "source_url": "https://example.com/filing",
                 "published_at": "2026-07-10",
             }
@@ -193,6 +194,7 @@ async def test_analyze_uses_saved_auth_read_only_json_and_callbacks(
     prompt = process.stdin.data.decode("utf-8")
     assert "어떤 도구도 사용하지 않는다" in prompt
     assert "입력에 없는 사실, 수치, 날짜, 출처 URL을 만들지 않는다" in prompt
+    assert "사실 원장에 연결할 수 없는 주장은 evidence에 넣지 않는다" in prompt
     assert "manual_work_request 또는 committee_directed_request" in prompt
     assert "제목과 질문을 분석 초점으로만 사용한다" in prompt
     assert [event["status"] for event in statuses] == ["started", "completed"]
@@ -290,6 +292,50 @@ async def test_analyze_rejects_fabricated_publication_date(
 
     with pytest.raises(CodexResponseValidationError, match="published_at"):
         await CodexProvider().analyze("technical", "AAPL", snapshot, [])
+
+
+@pytest.mark.asyncio
+async def test_analyze_requires_evidence_to_reference_input_fact(
+    monkeypatch: pytest.MonkeyPatch,
+    snapshot: dict[str, Any],
+    valid_result: dict[str, Any],
+) -> None:
+    grounded_snapshot = snapshot | {
+        "research_bundle": {
+            "facts": [{"fact_id": "fundamental:sec:revenue"}],
+        }
+    }
+    invalid_result = json.loads(json.dumps(valid_result))
+    invalid_result["evidence"][0]["fact_id"] = "fundamental:made-up"
+    install_fake_spawn(monkeypatch, result=invalid_result)
+
+    with pytest.raises(CodexResponseValidationError, match="fact_id"):
+        await CodexProvider().analyze("technical", "AAPL", grounded_snapshot, [])
+
+
+@pytest.mark.asyncio
+async def test_analyze_accepts_evidence_referencing_input_fact(
+    monkeypatch: pytest.MonkeyPatch,
+    snapshot: dict[str, Any],
+    valid_result: dict[str, Any],
+) -> None:
+    grounded_snapshot = snapshot | {
+        "market": "kr",
+        "research_bundle": {
+            "facts": [{"fact_id": "fundamental:dart:revenue"}],
+        },
+    }
+    grounded_result = json.loads(json.dumps(valid_result))
+    grounded_result["ticker"] = "005930"
+    grounded_result["evidence"][0]["fact_id"] = "fundamental:dart:revenue"
+    _, process = install_fake_spawn(monkeypatch, result=grounded_result)
+
+    result = await CodexProvider().analyze(
+        "technical", "005930", grounded_snapshot, []
+    )
+
+    assert result["evidence"][0]["fact_id"] == "fundamental:dart:revenue"
+    assert "한국 주식 투자위원회" in process.stdin.data.decode("utf-8")
 
 
 @pytest.mark.asyncio

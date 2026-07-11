@@ -121,6 +121,7 @@ class EvidenceItem(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     claim: NonEmptyString
+    fact_id: str | None
     source_url: str | None
     published_at: str | None
 
@@ -476,7 +477,12 @@ class CodexProvider:
 
         input_strings = self._collect_input_strings((snapshot, context))
         input_urls = self._collect_input_urls(input_strings)
+        input_fact_ids = self._collect_fact_ids(snapshot)
         for evidence in validated.evidence:
+            if input_fact_ids and evidence.fact_id not in input_fact_ids:
+                raise CodexResponseValidationError(
+                    "evidence.fact_id가 입력 사실 원장에 없는 값을 포함합니다."
+                )
             if evidence.source_url is not None:
                 self._validate_source_url(evidence.source_url, input_urls)
             if evidence.published_at is not None and evidence.published_at not in input_strings:
@@ -485,6 +491,26 @@ class CodexProvider:
                 )
 
         return validated.model_dump(mode="json")
+
+    @staticmethod
+    def _collect_fact_ids(value: Any) -> set[str]:
+        fact_ids: set[str] = set()
+
+        def visit(item: Any) -> None:
+            if isinstance(item, Mapping):
+                fact_id = item.get("fact_id")
+                if isinstance(fact_id, str) and fact_id.strip():
+                    fact_ids.add(fact_id)
+                for nested in item.values():
+                    visit(nested)
+            elif isinstance(item, Sequence) and not isinstance(
+                item, (str, bytes, bytearray)
+            ):
+                for nested in item:
+                    visit(nested)
+
+        visit(value)
+        return fact_ids
 
     @staticmethod
     def _collect_input_strings(value: Any) -> set[str]:

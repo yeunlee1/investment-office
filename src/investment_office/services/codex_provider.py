@@ -478,17 +478,30 @@ class CodexProvider:
         input_strings = self._collect_input_strings((snapshot, context))
         input_urls = self._collect_input_urls(input_strings)
         input_fact_ids = self._collect_fact_ids(snapshot)
+        fact_groundings = self._collect_fact_groundings(snapshot)
         for evidence in validated.evidence:
-            if input_fact_ids and evidence.fact_id not in input_fact_ids:
-                raise CodexResponseValidationError(
-                    "evidence.fact_id가 입력 사실 원장에 없는 값을 포함합니다."
-                )
-            if evidence.source_url is not None:
-                self._validate_source_url(evidence.source_url, input_urls)
-            if evidence.published_at is not None and evidence.published_at not in input_strings:
-                raise CodexResponseValidationError(
-                    "evidence.published_at이 입력 데이터에 없는 값을 포함합니다."
-                )
+            if input_fact_ids:
+                if evidence.fact_id not in input_fact_ids:
+                    raise CodexResponseValidationError(
+                        "evidence.fact_id가 입력 사실 원장에 없는 값을 포함합니다."
+                    )
+                allowed_groundings = fact_groundings.get(evidence.fact_id or "", set())
+                supplied_grounding = (evidence.source_url, evidence.published_at)
+                if not allowed_groundings or supplied_grounding not in allowed_groundings:
+                    raise CodexResponseValidationError(
+                        "evidence의 fact_id, source_url, published_at 조합이 "
+                        "입력 사실 원장과 일치하지 않습니다."
+                    )
+            else:
+                if evidence.source_url is not None:
+                    self._validate_source_url(evidence.source_url, input_urls)
+                if (
+                    evidence.published_at is not None
+                    and evidence.published_at not in input_strings
+                ):
+                    raise CodexResponseValidationError(
+                        "evidence.published_at이 입력 데이터에 없는 값을 포함합니다."
+                    )
 
         return validated.model_dump(mode="json")
 
@@ -511,6 +524,58 @@ class CodexProvider:
 
         visit(value)
         return fact_ids
+
+    @staticmethod
+    def _collect_fact_groundings(
+        value: Any,
+    ) -> dict[str, set[tuple[str | None, str | None]]]:
+        groundings: dict[str, set[tuple[str | None, str | None]]] = {}
+
+        def visit(item: Any) -> None:
+            if isinstance(item, Mapping):
+                raw_sources = item.get("sources")
+                raw_facts = item.get("facts")
+                if (
+                    isinstance(raw_sources, Sequence)
+                    and not isinstance(raw_sources, (str, bytes, bytearray))
+                    and isinstance(raw_facts, Sequence)
+                    and not isinstance(raw_facts, (str, bytes, bytearray))
+                ):
+                    source_urls: dict[str, str] = {}
+                    for raw_source in raw_sources:
+                        if not isinstance(raw_source, Mapping):
+                            continue
+                        source_id = raw_source.get("source_id")
+                        source_url = raw_source.get("url")
+                        if isinstance(source_id, str) and isinstance(source_url, str):
+                            source_urls[source_id] = source_url
+                    for raw_fact in raw_facts:
+                        if not isinstance(raw_fact, Mapping):
+                            continue
+                        fact_id = raw_fact.get("fact_id")
+                        source_id = raw_fact.get("source_id")
+                        published_at = raw_fact.get("published_at")
+                        if not (
+                            isinstance(fact_id, str)
+                            and isinstance(source_id, str)
+                            and isinstance(published_at, str)
+                        ):
+                            continue
+                        source_url = source_urls.get(source_id)
+                        if source_url is not None:
+                            groundings.setdefault(fact_id, set()).add(
+                                (source_url, published_at)
+                            )
+                for nested in item.values():
+                    visit(nested)
+            elif isinstance(item, Sequence) and not isinstance(
+                item, (str, bytes, bytearray)
+            ):
+                for nested in item:
+                    visit(nested)
+
+        visit(value)
+        return groundings
 
     @staticmethod
     def _collect_input_strings(value: Any) -> set[str]:

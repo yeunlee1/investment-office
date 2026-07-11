@@ -136,6 +136,24 @@ def install_fake_spawn(
     return captured, process
 
 
+def grounded_bundle(fact_id: str) -> dict[str, Any]:
+    return {
+        "sources": [
+            {
+                "source_id": "source:official",
+                "url": "https://example.com/filing",
+            }
+        ],
+        "facts": [
+            {
+                "fact_id": fact_id,
+                "source_id": "source:official",
+                "published_at": "2026-07-10",
+            }
+        ],
+    }
+
+
 @pytest.mark.asyncio
 async def test_analyze_uses_saved_auth_read_only_json_and_callbacks(
     monkeypatch: pytest.MonkeyPatch,
@@ -301,9 +319,7 @@ async def test_analyze_requires_evidence_to_reference_input_fact(
     valid_result: dict[str, Any],
 ) -> None:
     grounded_snapshot = snapshot | {
-        "research_bundle": {
-            "facts": [{"fact_id": "fundamental:sec:revenue"}],
-        }
+        "research_bundle": grounded_bundle("fundamental:sec:revenue")
     }
     invalid_result = json.loads(json.dumps(valid_result))
     invalid_result["evidence"][0]["fact_id"] = "fundamental:made-up"
@@ -321,9 +337,7 @@ async def test_analyze_accepts_evidence_referencing_input_fact(
 ) -> None:
     grounded_snapshot = snapshot | {
         "market": "kr",
-        "research_bundle": {
-            "facts": [{"fact_id": "fundamental:dart:revenue"}],
-        },
+        "research_bundle": grounded_bundle("fundamental:dart:revenue"),
     }
     grounded_result = json.loads(json.dumps(valid_result))
     grounded_result["ticker"] = "005930"
@@ -336,6 +350,51 @@ async def test_analyze_accepts_evidence_referencing_input_fact(
 
     assert result["evidence"][0]["fact_id"] == "fundamental:dart:revenue"
     assert "한국 주식 투자위원회" in process.stdin.data.decode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_analyze_rejects_mixed_grounding_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    snapshot: dict[str, Any],
+    valid_result: dict[str, Any],
+) -> None:
+    grounded_snapshot = snapshot | {
+        "research_bundle": {
+            "sources": [
+                {
+                    "source_id": "source:sec",
+                    "url": "https://www.sec.gov/filing",
+                },
+                {
+                    "source_id": "source:macro",
+                    "url": "https://example.com/macro",
+                },
+            ],
+            "facts": [
+                {
+                    "fact_id": "fundamental:sec:revenue",
+                    "source_id": "source:sec",
+                    "published_at": "2026-07-09",
+                },
+                {
+                    "fact_id": "macro:volatility:vix",
+                    "source_id": "source:macro",
+                    "published_at": "2026-07-10",
+                },
+            ],
+        }
+    }
+    invalid_result = json.loads(json.dumps(valid_result))
+    invalid_result["evidence"][0] = {
+        "claim": "매출 사실에 다른 자료의 주소와 날짜를 붙였다.",
+        "fact_id": "fundamental:sec:revenue",
+        "source_url": "https://example.com/macro",
+        "published_at": "2026-07-10",
+    }
+    install_fake_spawn(monkeypatch, result=invalid_result)
+
+    with pytest.raises(CodexResponseValidationError, match="조합"):
+        await CodexProvider().analyze("technical", "AAPL", grounded_snapshot, [])
 
 
 @pytest.mark.asyncio

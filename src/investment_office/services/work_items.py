@@ -30,6 +30,7 @@ from investment_office.domain import (
     utc_now,
 )
 from investment_office.services.event_broker import EventBroker
+from investment_office.services.instrument_identity import resolve_stored_instrument
 from investment_office.services.orchestrator import AnalysisProvider
 from investment_office.storage import Storage
 
@@ -294,9 +295,13 @@ class WorkItemService:
             )
 
         try:
+            provider_ticker = resolve_stored_instrument(
+                candidate.ticker,
+                candidate.attributes,
+            ).symbol
             raw_result = await self.provider.analyze(
                 resolved_role.value,
-                candidate.ticker,
+                provider_ticker,
                 provider_snapshot,
                 provider_context,
             )

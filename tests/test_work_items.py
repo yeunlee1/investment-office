@@ -78,20 +78,24 @@ def make_service(
     provider: GateProvider,
     *,
     with_market_snapshot: bool = True,
+    candidate: Candidate | None = None,
 ) -> tuple[WorkItemService, InMemoryStorage, EventBroker, AnalysisRun]:
     storage = InMemoryStorage()
-    candidate = Candidate(ticker="AAPL")
-    run = AnalysisRun(candidate_id=candidate.id)
-    storage.save_candidate(candidate)
+    resolved_candidate = candidate or Candidate(ticker="AAPL")
+    run = AnalysisRun(candidate_id=resolved_candidate.id)
+    storage.save_candidate(resolved_candidate)
     storage.save_analysis_run(run)
     if with_market_snapshot:
         storage.save_snapshot(
             Snapshot(
-                candidate_id=candidate.id,
+                candidate_id=resolved_candidate.id,
                 analysis_run_id=run.id,
                 kind=SnapshotKind.MARKET_DATA,
                 data={
-                    "ticker": "AAPL",
+                    "ticker": resolved_candidate.attributes.get(
+                        "local_symbol",
+                        resolved_candidate.ticker,
+                    ),
                     "close": 215.0,
                     "source_url": "https://query1.finance.yahoo.com/v8/finance/chart/AAPL",
                 },
@@ -104,6 +108,33 @@ def make_service(
         broker=broker,
     )
     return service, storage, broker, run
+
+
+@pytest.mark.asyncio
+async def test_korean_work_item_passes_local_symbol_to_provider() -> None:
+    provider = GateProvider()
+    candidate = Candidate(
+        ticker="KR-005930",
+        attributes={
+            "market": "kr",
+            "local_symbol": "005930",
+            "canonical_id": "kr:005930",
+            "currency": "KRW",
+        },
+    )
+    service, _, _, run = make_service(provider, candidate=candidate)
+    await service.create_work_item(
+        run_id=run.id,
+        role=AgentRole.FUNDAMENTAL,
+        title="한국 기업 재무 확인",
+        instructions="공식 재무 사실만 다시 확인한다.",
+    )
+
+    result = await service.run_next(run.id, AgentRole.FUNDAMENTAL)
+
+    assert result is not None
+    assert result.status is WorkItemStatus.COMPLETED
+    assert provider.calls[0]["ticker"] == "005930"
 
 
 @pytest.mark.asyncio

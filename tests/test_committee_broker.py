@@ -81,13 +81,15 @@ def seed_completed_run(
     storage: InMemoryStorage,
     *,
     include_roles: tuple[AgentRole, ...] = COMMITTEE_ROLES,
+    candidate: Candidate | None = None,
 ) -> AnalysisRun:
-    candidate = storage.save_candidate(
-        Candidate(ticker="AAPL", thesis="서비스 매출의 질을 검토한다.")
+    resolved_candidate = storage.save_candidate(
+        candidate
+        or Candidate(ticker="AAPL", thesis="서비스 매출의 질을 검토한다.")
     )
     run = storage.save_analysis_run(
         AnalysisRun(
-            candidate_id=candidate.id,
+            candidate_id=resolved_candidate.id,
             status=AnalysisRunStatus.COMPLETED,
             requested_at=NOW,
             started_at=NOW,
@@ -97,10 +99,17 @@ def seed_completed_run(
     )
     storage.save_snapshot(
         Snapshot(
-            candidate_id=candidate.id,
+            candidate_id=resolved_candidate.id,
             analysis_run_id=run.id,
             kind=SnapshotKind.MARKET_DATA,
-            data={"ticker": "AAPL", "close": 215.0, "source_url": SOURCE_URL},
+            data={
+                "ticker": resolved_candidate.attributes.get(
+                    "local_symbol",
+                    resolved_candidate.ticker,
+                ),
+                "close": 215.0,
+                "source_url": SOURCE_URL,
+            },
             captured_at=NOW,
         )
     )
@@ -141,6 +150,42 @@ def seed_completed_run(
             )
         )
     return run
+
+
+@pytest.mark.asyncio
+async def test_korean_meeting_uses_local_symbol_for_state_and_directed_speech() -> None:
+    storage = InMemoryStorage()
+    candidate = Candidate(
+        ticker="KR-005930",
+        attributes={
+            "market": "kr",
+            "local_symbol": "005930",
+            "canonical_id": "kr:005930",
+            "currency": "KRW",
+        },
+    )
+    run = seed_completed_run(
+        storage,
+        include_roles=(AgentRole.FUNDAMENTAL,),
+        candidate=candidate,
+    )
+    provider = FakeProvider()
+    broker = CommitteeBroker(storage=storage, provider=provider)
+
+    state = await broker.start_meeting(
+        run.id,
+        topic="한국 기업 추가 근거 확인",
+        roles=[AgentRole.FUNDAMENTAL],
+        max_turns=2,
+    )
+    await broker.directed_speak(
+        run.id,
+        AgentRole.FUNDAMENTAL,
+        "공식 재무 사실을 다시 확인해줘.",
+    )
+
+    assert state.ticker == "005930"
+    assert provider.calls[0]["ticker"] == "005930"
 
 
 @pytest.mark.asyncio

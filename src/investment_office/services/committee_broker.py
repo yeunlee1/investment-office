@@ -27,6 +27,7 @@ from investment_office.domain import (
     utc_now,
 )
 from investment_office.services.event_broker import EventBroker
+from investment_office.services.instrument_identity import resolve_stored_instrument
 from investment_office.services.orchestrator import AnalysisProvider
 from investment_office.storage import Storage
 
@@ -241,11 +242,12 @@ class CommitteeBroker:
 
         outputs = self.storage.list_agent_outputs(run_id)
         turns = self._initial_turns(selected_roles, outputs)
+        instrument = resolve_stored_instrument(candidate.ticker, candidate.attributes)
         meeting = _ActiveMeeting(
             session_id=uuid4(),
             analysis_run_id=run.id,
             candidate_id=candidate.id,
-            ticker=candidate.ticker,
+            ticker=instrument.symbol,
             topic=normalized_topic,
             selected_roles=selected_roles,
             max_turns=max_turns,

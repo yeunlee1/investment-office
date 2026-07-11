@@ -254,9 +254,9 @@ class EcosMacroContextClient:
             unit=spec.unit,
             currency=spec.currency,
             observed_at=_at_utc_midnight(observation.observed_on),
-            published_at=_at_utc_midnight(observation.observed_on),
+            published_at=collected_at,
             collected_at=collected_at,
-            publication_time_basis=PublicationTimeBasis.OBSERVATION_DATE_PROXY,
+            publication_time_basis=PublicationTimeBasis.RETRIEVAL_TIME_PROXY,
         )
         max_age = self._monthly_max_age if spec.cycle == "M" else self._daily_max_age
         age = collected_at - fact.observed_at

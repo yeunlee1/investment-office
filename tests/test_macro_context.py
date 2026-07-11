@@ -1,17 +1,18 @@
-# FRED 공통 거시 수집기의 값 계산과 품질 차단 정책을 시험한다
+# 권리 확인된 공식 거시 수집기의 계산과 차단 정책을 검증한다
 from __future__ import annotations
 
-import io
-import zipfile
+import json
 from datetime import UTC, datetime
 
 import httpx
 import pytest
 
 from investment_office.services.macro_context import (
-    FRED_SERIES_IDS,
+    BLS_API_URL,
+    TREASURY_XML_URL,
     FredMacroContextClient,
     MacroContextError,
+    OfficialMacroContextClient,
     build_ecos_unavailable_section,
 )
 from investment_office.services.research_contracts import (
@@ -19,202 +20,164 @@ from investment_office.services.research_contracts import (
     SectionStatus,
 )
 
-COLLECTED_AT = datetime(2026, 7, 12, 9, 30, tzinfo=UTC)
+NOW = datetime(2026, 7, 12, 3, 0, tzinfo=UTC)
 
 
-def _csv(*rows: tuple[str, list[str]]) -> str:
-    header = ",".join(("observation_date", *FRED_SERIES_IDS))
-    return "\n".join((header, *(f"{day},{','.join(values)}" for day, values in rows)))
+def _treasury_xml(rows: list[tuple[str, str, str, str]]) -> bytes:
+    entries = "".join(
+        "<entry><content><m:properties>"
+        f"<d:NEW_DATE>{observed_on}T00:00:00</d:NEW_DATE>"
+        f"<d:BC_2YEAR>{two_year}</d:BC_2YEAR>"
+        f"<d:BC_3YEAR>{three_year}</d:BC_3YEAR>"
+        f"<d:BC_10YEAR>{ten_year}</d:BC_10YEAR>"
+        "</m:properties></content></entry>"
+        for observed_on, two_year, three_year, ten_year in rows
+    )
+    return (
+        '<feed xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata" '
+        'xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices">'
+        f"{entries}</feed>"
+    ).encode()
 
 
-def _values(start: float) -> list[str]:
-    return [str(start + index) for index in range(len(FRED_SERIES_IDS))]
+def _bls_payload() -> bytes:
+    return json.dumps(
+        {
+            "status": "REQUEST_SUCCEEDED",
+            "Results": {
+                "series": [
+                    {
+                        "seriesID": "CUSR0000SA0",
+                        "data": [
+                            {"year": "2026", "period": "M06", "value": "324.1"},
+                            {"year": "2025", "period": "M06", "value": "318.0"},
+                        ],
+                    },
+                    {
+                        "seriesID": "CUSR0000SA0L1E",
+                        "data": [
+                            {"year": "2026", "period": "M06", "value": "332.5"},
+                            {"year": "2025", "period": "M06", "value": "325.0"},
+                        ],
+                    },
+                    {
+                        "seriesID": "LNS14000000",
+                        "data": [
+                            {"year": "2026", "period": "M06", "value": "4.2"},
+                            {"year": "2026", "period": "M05", "value": "4.1"},
+                        ],
+                    },
+                ]
+            },
+        }
+    ).encode()
 
 
-def _mock_client(content: str, requests: list[httpx.Request]) -> httpx.AsyncClient:
+@pytest.mark.asyncio
+async def test_official_client_uses_origin_sources_and_blocks_unlicensed_axes() -> None:
+    requests: list[httpx.Request] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        return httpx.Response(200, text=content, request=request)
+        if str(request.url).startswith(TREASURY_XML_URL):
+            year = request.url.params["field_tdr_date_value"]
+            rows = (
+                [("2026-06-10", "4.10", "4.05", "4.30"), ("2026-07-10", "4.20", "4.15", "4.40")]
+                if year == "2026"
+                else [("2025-12-31", "4.00", "3.95", "4.20")]
+            )
+            return httpx.Response(200, content=_treasury_xml(rows), request=request)
+        if str(request.url) == BLS_API_URL:
+            return httpx.Response(200, content=_bls_payload(), request=request)
+        raise AssertionError(f"예상하지 못한 요청입니다. {request.url}")
 
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
-
-
-def _mock_binary_client(content: bytes) -> httpx.AsyncClient:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=content, request=request)
-
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
-
-
-@pytest.mark.asyncio
-async def test_fetch_uses_bounded_official_requests_and_builds_all_sections() -> None:
-    content = _csv(
-        ("2025-07-10", _values(5)),
-        ("2026-06-09", _values(10)),
-        ("2026-07-09", _values(20)),
-        ("2026-07-10", _values(30)),
-    )
-    requests: list[httpx.Request] = []
-    http_client = _mock_client(content, requests)
-    try:
-        result = await FredMacroContextClient(
-            client=http_client,
-            now_factory=lambda: COLLECTED_AT,
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await OfficialMacroContextClient(
+            client=client,
+            now_factory=lambda: NOW,
         ).fetch()
-    finally:
-        await http_client.aclose()
 
-    assert len(requests) == 2
-    assert all(request.url.host == "fred.stlouisfed.org" for request in requests)
-    requested_ids = [
-        series_id
-        for request in requests
-        for series_id in request.url.params["id"].split(",")
-    ]
-    assert requested_ids == list(FRED_SERIES_IDS)
-    assert len(result.sources) == 1
-    assert str(result.sources[0].url).startswith("https://fred.stlouisfed.org/")
-    assert result.sources[0].retrieved_at == COLLECTED_AT
-    assert result.sources[0].content_checksum is not None
-    assert len(result.sources[0].content_checksum) == 64
-    assert len(result.facts) == len(FRED_SERIES_IDS) * 2
-    assert {section.status for section in result.sections} == {SectionStatus.COMPLETE}
-    assert [section.section_id for section in result.sections] == [
-        "macro.rates",
-        "macro.currency",
-        "macro.volatility",
-        "macro.commodities",
-        "macro.liquidity",
-        "macro.growth_inflation",
-    ]
-    assert result.stale_fact_ids == ()
-    assert result.future_section_ids == ()
-
-    dgs10_level = next(fact for fact in result.facts if fact.fact_id.endswith("dgs10:level"))
-    dgs10_change = next(fact for fact in result.facts if fact.fact_id.endswith("dgs10:change_30d"))
-    assert dgs10_level.value == 36.0
-    assert dgs10_level.observed_at == datetime(2026, 7, 10, tzinfo=UTC)
-    assert dgs10_level.collected_at == COLLECTED_AT
-    assert dgs10_level.publication_time_basis is PublicationTimeBasis.OBSERVATION_DATE_PROXY
-    assert dgs10_change.value == 20.0
-    assert dgs10_change.unit == "percentage_point"
-
-
-@pytest.mark.asyncio
-async def test_fetch_merges_official_multi_series_zip_response() -> None:
-    first_ids = FRED_SERIES_IDS[:4]
-    second_ids = FRED_SERIES_IDS[4:]
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(
-            "daily-one.csv",
-            "observation_date,"
-            + ",".join(first_ids)
-            + "\n2025-07-10,1,2,3,4\n2026-06-10,1,2,3,4\n"
-            + "2026-07-10,5,6,7,8\n",
-        )
-        archive.writestr(
-            "daily-two.csv",
-            "observation_date,"
-            + ",".join(second_ids)
-            + "\n2025-07-10,1,2,3,4,5,6,7,8,9,10,11,12,13\n"
-            + "2026-06-10,1,2,3,4,5,6,7,8,9,10,11,12,13\n"
-            + "2026-07-10,5,6,7,8,9,10,11,12,13,14,15,16,17\n",
-        )
-        archive.writestr("README.txt", "설명")
-    http_client = _mock_binary_client(buffer.getvalue())
-    try:
-        result = await FredMacroContextClient(
-            client=http_client,
-            now_factory=lambda: COLLECTED_AT,
-        ).fetch()
-    finally:
-        await http_client.aclose()
-
-    assert len(result.facts) == len(FRED_SERIES_IDS) * 2
-    assert {section.status for section in result.sections} == {SectionStatus.COMPLETE}
-
-
-@pytest.mark.asyncio
-async def test_missing_series_and_baseline_are_explicitly_partial_or_blocked() -> None:
-    latest = _values(30)
-    latest[FRED_SERIES_IDS.index("DGS3")] = "."
-    content = _csv(("2026-07-10", latest))
-    requests: list[httpx.Request] = []
-    http_client = _mock_client(content, requests)
-    try:
-        result = await FredMacroContextClient(
-            client=http_client,
-            now_factory=lambda: COLLECTED_AT,
-        ).fetch()
-    finally:
-        await http_client.aclose()
-
-    sections = {section.section_id: section for section in result.sections}
-    assert sections["macro.rates"].status is SectionStatus.PARTIAL
-    assert any("DGS3 최신 유효값" in gap for gap in sections["macro.rates"].data_gaps)
-    assert any("30일 변화 기준값" in gap for gap in sections["macro.currency"].data_gaps)
-    assert sections["macro.volatility"].status is SectionStatus.PARTIAL
-    assert sections["macro.liquidity"].status is SectionStatus.PARTIAL
-
-    all_missing = _csv(("2026-07-10", ["."] * len(FRED_SERIES_IDS)))
-    blocked_client = _mock_client(all_missing, [])
-    try:
-        blocked = await FredMacroContextClient(
-            client=blocked_client,
-            now_factory=lambda: COLLECTED_AT,
-        ).fetch()
-    finally:
-        await blocked_client.aclose()
-    assert {section.status for section in blocked.sections} == {SectionStatus.BLOCKED}
-    assert all(section.blocking_reasons for section in blocked.sections)
-
-
-@pytest.mark.asyncio
-async def test_stale_latest_values_block_sections_and_identify_stale_facts() -> None:
-    content = _csv(
-        ("2026-05-31", _values(10)),
-        ("2026-07-01", _values(20)),
-    )
-    requests: list[httpx.Request] = []
-    http_client = _mock_client(content, requests)
-    try:
-        result = await FredMacroContextClient(
-            client=http_client,
-            now_factory=lambda: datetime(2026, 10, 20, tzinfo=UTC),
-        ).fetch()
-    finally:
-        await http_client.aclose()
-
-    assert {section.status for section in result.sections} == {SectionStatus.BLOCKED}
-    assert len(result.stale_fact_ids) == len(result.facts)
+    assert len(requests) == 3
+    assert all("fred.stlouisfed.org" not in str(request.url) for request in requests)
+    assert {source.source_id for source in result.sources} == {
+        "official:us_treasury:yield_curve",
+        "official:bls:public_data",
+    }
+    assert len(result.facts) == 14
+    assert all(fact.published_at == NOW for fact in result.facts)
     assert all(
-        "허용 수명" in reason for section in result.sections for reason in section.blocking_reasons
+        fact.publication_time_basis is PublicationTimeBasis.RETRIEVAL_TIME_PROXY
+        for fact in result.facts
+    )
+    by_section = {section.section_id: section for section in result.sections}
+    assert by_section["macro.rates"].status is SectionStatus.COMPLETE
+    assert by_section["macro.growth_inflation"].status is SectionStatus.COMPLETE
+    assert by_section["macro.currency"].status is SectionStatus.UNAVAILABLE
+    assert by_section["macro.volatility"].status is SectionStatus.UNAVAILABLE
+    assert by_section["macro.commodities"].status is SectionStatus.UNAVAILABLE
+    assert by_section["macro.liquidity"].status is SectionStatus.UNAVAILABLE
+    assert result.stale_fact_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_preserves_other_official_axis() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).startswith(TREASURY_XML_URL):
+            return httpx.Response(
+                200,
+                content=_treasury_xml(
+                    [("2026-06-10", "4.10", "4.05", "4.30"), ("2026-07-10", "4.20", "4.15", "4.40")]
+                ),
+                request=request,
+            )
+        return httpx.Response(503, content=b"unavailable", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await OfficialMacroContextClient(
+            client=client,
+            now_factory=lambda: NOW,
+        ).fetch()
+
+    by_section = {section.section_id: section for section in result.sections}
+    assert by_section["macro.rates"].status is SectionStatus.COMPLETE
+    assert by_section["macro.growth_inflation"].status is SectionStatus.BLOCKED
+    assert any(
+        "노동통계국" in reason for reason in by_section["macro.growth_inflation"].blocking_reasons
     )
 
 
-def test_ecos_policy_marks_missing_key_unavailable() -> None:
-    section = build_ecos_unavailable_section("  ")
+@pytest.mark.asyncio
+async def test_fred_client_is_disabled_before_network_access() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=b"", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(MacroContextError, match="비활성화"):
+            await FredMacroContextClient(client=client).fetch()
+
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_official_client_rejects_naive_collection_time() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, request=request))
+    ) as client:
+        with pytest.raises(MacroContextError, match="시간대"):
+            await OfficialMacroContextClient(
+                client=client,
+                now_factory=lambda: datetime(2026, 7, 12),
+            ).fetch()
+
+
+def test_missing_ecos_key_builds_required_unavailable_section() -> None:
+    section = build_ecos_unavailable_section(None)
 
     assert section is not None
-    assert section.section_id == "macro.kr.ecos"
     assert section.status is SectionStatus.UNAVAILABLE
     assert section.required is True
-    assert "ECOS API 키" in section.blocking_reasons[0]
-    assert build_ecos_unavailable_section("configured-key") is None
-
-
-@pytest.mark.asyncio
-async def test_invalid_csv_is_reported_without_falling_back_to_network() -> None:
-    requests: list[httpx.Request] = []
-    http_client = _mock_client("not_a_date,VIXCLS\n2026-07-10,20", requests)
-    try:
-        with pytest.raises(MacroContextError, match="관측일 열"):
-            await FredMacroContextClient(
-                client=http_client,
-                now_factory=lambda: COLLECTED_AT,
-            ).fetch()
-    finally:
-        await http_client.aclose()
-
-    assert len(requests) == 2
+    assert build_ecos_unavailable_section("configured") is None

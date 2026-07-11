@@ -158,7 +158,7 @@ async def test_fetch_uses_verified_codes_and_builds_complete_official_section() 
     assert facts["macro:ecos:cpi:level"].observed_at == datetime(2026, 6, 30, tzinfo=UTC)
     assert (
         facts["macro:ecos:cpi:level"].publication_time_basis
-        is PublicationTimeBasis.OBSERVATION_DATE_PROXY
+        is PublicationTimeBasis.RETRIEVAL_TIME_PROXY
     )
 
 

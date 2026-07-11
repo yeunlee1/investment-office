@@ -1,16 +1,18 @@
-# 공통 거시 지표를 FRED에서 수집하고 연구 계약으로 정규화한다
+# 공통 거시 지표를 권리 확인된 공식 원공급원에서 수집해 연구 계약으로 정규화한다
 from __future__ import annotations
 
 import asyncio
 import csv
 import hashlib
 import io
+import json
 import math
 import zipfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Final, Literal
+from xml.etree import ElementTree
 
 import httpx
 from pydantic import AnyHttpUrl
@@ -32,6 +34,13 @@ DEFAULT_MAX_AGE_DAYS: Final = 7
 MAX_FRED_ARCHIVE_BYTES: Final = 5 * 1024 * 1024
 MAX_FRED_UNCOMPRESSED_BYTES: Final = 20 * 1024 * 1024
 FRED_REQUEST_CHUNK_SIZE: Final = 10
+TREASURY_XML_URL: Final = (
+    "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml"
+)
+BLS_API_URL: Final = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
+TREASURY_SOURCE_ID: Final = "official:us_treasury:yield_curve"
+BLS_SOURCE_ID: Final = "official:bls:public_data"
+MAX_OFFICIAL_RESPONSE_BYTES: Final = 2 * 1024 * 1024
 
 MacroSectionId = Literal[
     "macro.rates",
@@ -222,7 +231,7 @@ SECTION_ORDER: Final = tuple(SECTION_TITLES)
 
 
 class MacroContextError(RuntimeError):
-    """FRED 거시 자료 요청이나 해석에 실패했을 때 발생한다."""
+    """공식 거시 자료 요청이나 해석에 실패했을 때 발생한다."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +257,338 @@ class _SeriesResult:
     blocking_reasons: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _OfficialSeriesSpec:
+    series_id: str
+    source_id: str
+    fact_prefix: str
+    metric: str
+    unit: str
+    currency: str | None
+    change_mode: ChangeMode
+    lookback_days: int
+    baseline_max_lag_days: int
+    max_age_days: int
+    change_label: str
+
+
+_TREASURY_SPECS: Final = (
+    _OfficialSeriesSpec(
+        "2y",
+        TREASURY_SOURCE_ID,
+        "macro:treasury:2y",
+        "미국 국채 2년물 금리",
+        "percent",
+        None,
+        "percentage_point",
+        30,
+        7,
+        7,
+        "30일 변화",
+    ),
+    _OfficialSeriesSpec(
+        "3y",
+        TREASURY_SOURCE_ID,
+        "macro:treasury:3y",
+        "미국 국채 3년물 금리",
+        "percent",
+        None,
+        "percentage_point",
+        30,
+        7,
+        7,
+        "30일 변화",
+    ),
+    _OfficialSeriesSpec(
+        "10y",
+        TREASURY_SOURCE_ID,
+        "macro:treasury:10y",
+        "미국 국채 10년물 금리",
+        "percent",
+        None,
+        "percentage_point",
+        30,
+        7,
+        7,
+        "30일 변화",
+    ),
+    _OfficialSeriesSpec(
+        "10y2y",
+        TREASURY_SOURCE_ID,
+        "macro:treasury:10y2y",
+        "미국 국채 10년물과 2년물 금리차",
+        "percentage_point",
+        None,
+        "percentage_point",
+        30,
+        7,
+        7,
+        "30일 변화",
+    ),
+)
+_BLS_SPECS: Final = (
+    _OfficialSeriesSpec(
+        "CUSR0000SA0",
+        BLS_SOURCE_ID,
+        "macro:bls:cpi",
+        "미국 소비자물가지수",
+        "index_1982_1984_100",
+        None,
+        "percent",
+        365,
+        45,
+        75,
+        "12개월 변화",
+    ),
+    _OfficialSeriesSpec(
+        "CUSR0000SA0L1E",
+        BLS_SOURCE_ID,
+        "macro:bls:core_cpi",
+        "미국 근원 소비자물가지수",
+        "index_1982_1984_100",
+        None,
+        "percent",
+        365,
+        45,
+        75,
+        "12개월 변화",
+    ),
+    _OfficialSeriesSpec(
+        "LNS14000000",
+        BLS_SOURCE_ID,
+        "macro:bls:unemployment",
+        "미국 실업률",
+        "percent",
+        None,
+        "percentage_point",
+        31,
+        7,
+        75,
+        "1개월 변화",
+    ),
+)
+
+
+class OfficialMacroContextClient:
+    """미국 재무부와 노동통계국 원자료만 사용해 공통 거시 입력을 만든다."""
+
+    def __init__(
+        self,
+        timeout_seconds: float = 20.0,
+        client: httpx.AsyncClient | None = None,
+        *,
+        now_factory: Callable[[], datetime] | None = None,
+    ) -> None:
+        if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds는 0보다 커야 합니다.")
+        self.timeout_seconds = float(timeout_seconds)
+        self.client = client
+        self._now_factory = now_factory or (lambda: datetime.now(UTC))
+
+    async def fetch(self) -> MacroContextResult:
+        """권리 확인된 두 공식 원공급원을 병렬 조회하고 미구성 축은 차단한다."""
+
+        collected_at = self._aware_now()
+        if self.client is not None:
+            results = await self._fetch_responses(self.client, collected_at.year)
+        else:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                results = await self._fetch_responses(client, collected_at.year)
+
+        treasury_responses = tuple(
+            result
+            for result in results[:2]
+            if isinstance(result, httpx.Response)
+        )
+        treasury_errors = tuple(
+            _safe_provider_error("미국 재무부", result)
+            for result in results[:2]
+            if isinstance(result, BaseException)
+        )
+        bls_response = results[2] if isinstance(results[2], httpx.Response) else None
+        bls_error = (
+            _safe_provider_error("미국 노동통계국", results[2])
+            if isinstance(results[2], BaseException)
+            else None
+        )
+
+        sources: list[SourceRef] = []
+        facts: list[Fact] = []
+        stale_fact_ids: list[str] = []
+        sections: list[ResearchSection] = []
+
+        treasury_observations: dict[str, tuple[_Observation, ...]] = {
+            spec.series_id: () for spec in _TREASURY_SPECS
+        }
+        treasury_gaps: list[str] = []
+        treasury_blocks = list(treasury_errors)
+        if treasury_responses:
+            try:
+                treasury_observations = _merge_treasury_observations(
+                    tuple(
+                        _parse_treasury_xml(response.content, collected_at.date())
+                        for response in treasury_responses
+                    )
+                )
+                sources.append(
+                    SourceRef(
+                        source_id=TREASURY_SOURCE_ID,
+                        name="미국 재무부 국채 금리",
+                        tier=SourceTier.OFFICIAL,
+                        url=AnyHttpUrl(TREASURY_XML_URL),
+                        retrieved_at=collected_at,
+                        content_checksum=hashlib.sha256(
+                            b"\0".join(response.content for response in treasury_responses)
+                        ).hexdigest(),
+                    )
+                )
+            except MacroContextError as exc:
+                treasury_blocks.append(str(exc))
+        for spec in _TREASURY_SPECS:
+            series_result = _build_official_series(
+                spec,
+                treasury_observations[spec.series_id],
+                collected_at,
+            )
+            facts.extend(series_result.facts)
+            stale_fact_ids.extend(series_result.stale_fact_ids)
+            treasury_gaps.extend(series_result.data_gaps)
+            treasury_blocks.extend(series_result.blocking_reasons)
+        sections.append(
+            _build_section(
+                "macro.rates",
+                [fact.fact_id for fact in facts if fact.source_id == TREASURY_SOURCE_ID],
+                treasury_gaps,
+                treasury_blocks,
+            )
+        )
+
+        bls_observations: dict[str, tuple[_Observation, ...]] = {
+            spec.series_id: () for spec in _BLS_SPECS
+        }
+        bls_gaps: list[str] = []
+        bls_blocks = [bls_error] if bls_error is not None else []
+        if bls_response is not None:
+            try:
+                bls_observations = _parse_bls_json(bls_response.content, collected_at.date())
+                sources.append(
+                    SourceRef(
+                        source_id=BLS_SOURCE_ID,
+                        name="미국 노동통계국 공개 자료",
+                        tier=SourceTier.OFFICIAL,
+                        url=AnyHttpUrl(BLS_API_URL),
+                        retrieved_at=collected_at,
+                        content_checksum=hashlib.sha256(bls_response.content).hexdigest(),
+                    )
+                )
+            except MacroContextError as exc:
+                bls_blocks.append(str(exc))
+        growth_fact_ids: list[str] = []
+        for spec in _BLS_SPECS:
+            series_result = _build_official_series(
+                spec,
+                bls_observations[spec.series_id],
+                collected_at,
+            )
+            facts.extend(series_result.facts)
+            growth_fact_ids.extend(fact.fact_id for fact in series_result.facts)
+            stale_fact_ids.extend(series_result.stale_fact_ids)
+            bls_gaps.extend(series_result.data_gaps)
+            bls_blocks.extend(series_result.blocking_reasons)
+        sections.extend(
+            (
+                _build_section(
+                    "macro.growth_inflation",
+                    growth_fact_ids,
+                    bls_gaps,
+                    bls_blocks,
+                ),
+                _unavailable_macro_section(
+                    "macro.currency",
+                    "연준 이사회 환율 원자료 어댑터가 아직 구성되지 않았습니다.",
+                ),
+                _unavailable_macro_section(
+                    "macro.volatility",
+                    "생성형 AI 사용 권리가 확인된 VIX 공급원이 구성되지 않았습니다.",
+                ),
+                _unavailable_macro_section(
+                    "macro.commodities",
+                    "생성형 AI 사용 권리가 확인된 원유 공급원이 구성되지 않았습니다.",
+                ),
+                _unavailable_macro_section(
+                    "macro.liquidity",
+                    "연준 이사회 유동성 원자료 어댑터가 아직 구성되지 않았습니다.",
+                ),
+            )
+        )
+        section_by_id = {section.section_id: section for section in sections}
+        return MacroContextResult(
+            sources=tuple(sources),
+            facts=tuple(facts),
+            sections=tuple(section_by_id[section_id] for section_id in SECTION_ORDER),
+            stale_fact_ids=tuple(dict.fromkeys(stale_fact_ids)),
+        )
+
+    async def _fetch_responses(
+        self,
+        client: httpx.AsyncClient,
+        current_year: int,
+    ) -> tuple[httpx.Response | BaseException, ...]:
+        headers = {
+            "Accept": "application/xml, application/json",
+            "User-Agent": "investment-office/0.1",
+        }
+        start_year = current_year - 1
+        requests = (
+            self._get_treasury(client, current_year, headers),
+            self._get_treasury(client, start_year, headers),
+            self._get_bls(client, start_year, current_year, headers),
+        )
+        return tuple(await asyncio.gather(*requests, return_exceptions=True))
+
+    async def _get_treasury(
+        self,
+        client: httpx.AsyncClient,
+        year: int,
+        headers: Mapping[str, str],
+    ) -> httpx.Response:
+        response = await client.get(
+            TREASURY_XML_URL,
+            params={
+                "data": "daily_treasury_yield_curve",
+                "field_tdr_date_value": str(year),
+            },
+            headers=headers,
+            timeout=self.timeout_seconds,
+        )
+        return _validate_official_response(response, "미국 재무부")
+
+    async def _get_bls(
+        self,
+        client: httpx.AsyncClient,
+        start_year: int,
+        end_year: int,
+        headers: Mapping[str, str],
+    ) -> httpx.Response:
+        response = await client.post(
+            BLS_API_URL,
+            json={
+                "seriesid": [spec.series_id for spec in _BLS_SPECS],
+                "startyear": str(start_year),
+                "endyear": str(end_year),
+            },
+            headers=headers,
+            timeout=self.timeout_seconds,
+        )
+        return _validate_official_response(response, "미국 노동통계국")
+
+    def _aware_now(self) -> datetime:
+        now = self._now_factory()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise MacroContextError("거시 자료 수집 시각에는 시간대 정보가 필요합니다.")
+        return now.astimezone(UTC)
+
+
 class FredMacroContextClient:
     """공식 FRED CSV 한 건으로 공통 거시 자료를 비동기로 조회한다."""
 
@@ -270,6 +611,10 @@ class FredMacroContextClient:
 
     async def fetch(self) -> MacroContextResult:
         """모든 지정 계열을 한 요청으로 읽어 최신값과 30일 변화를 만든다."""
+
+        raise MacroContextError(
+            "FRED 약관이 생성형 AI 연계와 저장·캐시를 금지하므로 이 수집기는 비활성화됐습니다."
+        )
 
         responses = await self._get_all()
         collected_at = self._aware_now()
@@ -435,6 +780,276 @@ class FredMacroContextClient:
                 f"{spec.series_id} 최신값이 {age_days}일 전 자료여서 허용 수명을 초과했습니다.",
             ),
         )
+
+
+def _validate_official_response(
+    response: httpx.Response,
+    provider_name: str,
+) -> httpx.Response:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise MacroContextError(
+            f"{provider_name} 응답 상태가 올바르지 않습니다."
+        ) from exc
+    if len(response.content) > MAX_OFFICIAL_RESPONSE_BYTES:
+        raise MacroContextError(f"{provider_name} 응답이 허용 크기를 초과했습니다.")
+    return response
+
+
+def _safe_provider_error(provider_name: str, error: BaseException) -> str:
+    if isinstance(error, MacroContextError):
+        return str(error)
+    if isinstance(error, httpx.TimeoutException):
+        return f"{provider_name} 요청이 시간 제한을 초과했습니다."
+    if isinstance(error, httpx.HTTPError):
+        return f"{provider_name} 네트워크 요청에 실패했습니다."
+    return f"{provider_name} 자료를 안전하게 해석하지 못했습니다."
+
+
+def _parse_treasury_xml(
+    content: bytes,
+    cutoff_date: date,
+) -> dict[str, tuple[_Observation, ...]]:
+    if len(content) > MAX_OFFICIAL_RESPONSE_BYTES:
+        raise MacroContextError("미국 재무부 응답이 허용 크기를 초과했습니다.")
+    try:
+        root = ElementTree.fromstring(content)
+    except ElementTree.ParseError as exc:
+        raise MacroContextError("미국 재무부 XML을 읽을 수 없습니다.") from exc
+
+    values: dict[str, dict[date, float]] = {
+        spec.series_id: {} for spec in _TREASURY_SPECS
+    }
+    for properties in root.iter():
+        if _xml_local_name(properties.tag) != "properties":
+            continue
+        row = {
+            _xml_local_name(child.tag): (child.text or "").strip()
+            for child in properties
+        }
+        observed_on = _parse_date_prefix(row.get("NEW_DATE"))
+        if observed_on is None or observed_on > cutoff_date:
+            continue
+        two_year = _parse_number(row.get("BC_2YEAR"))
+        three_year = _parse_number(row.get("BC_3YEAR"))
+        ten_year = _parse_number(row.get("BC_10YEAR"))
+        if two_year is not None:
+            values["2y"][observed_on] = two_year
+        if three_year is not None:
+            values["3y"][observed_on] = three_year
+        if ten_year is not None:
+            values["10y"][observed_on] = ten_year
+        if two_year is not None and ten_year is not None:
+            values["10y2y"][observed_on] = round(ten_year - two_year, 6)
+
+    return {
+        series_id: tuple(
+            _Observation(observed_on, value)
+            for observed_on, value in sorted(series_values.items())
+        )
+        for series_id, series_values in values.items()
+    }
+
+
+def _merge_treasury_observations(
+    observation_sets: tuple[dict[str, tuple[_Observation, ...]], ...],
+) -> dict[str, tuple[_Observation, ...]]:
+    merged: dict[str, dict[date, float]] = {
+        spec.series_id: {} for spec in _TREASURY_SPECS
+    }
+    for observations_by_series in observation_sets:
+        for series_id, observations in observations_by_series.items():
+            for observation in observations:
+                merged[series_id][observation.observed_on] = observation.value
+    return {
+        series_id: tuple(
+            _Observation(observed_on, value)
+            for observed_on, value in sorted(series_values.items())
+        )
+        for series_id, series_values in merged.items()
+    }
+
+
+def _parse_bls_json(
+    content: bytes,
+    cutoff_date: date,
+) -> dict[str, tuple[_Observation, ...]]:
+    if len(content) > MAX_OFFICIAL_RESPONSE_BYTES:
+        raise MacroContextError("미국 노동통계국 응답이 허용 크기를 초과했습니다.")
+    try:
+        payload = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MacroContextError("미국 노동통계국 JSON을 읽을 수 없습니다.") from exc
+    if not isinstance(payload, dict) or payload.get("status") != "REQUEST_SUCCEEDED":
+        raise MacroContextError("미국 노동통계국이 성공 상태를 반환하지 않았습니다.")
+    results = payload.get("Results")
+    raw_series = results.get("series") if isinstance(results, dict) else None
+    if not isinstance(raw_series, list):
+        raise MacroContextError("미국 노동통계국 응답에 시계열 목록이 없습니다.")
+
+    values: dict[str, dict[date, float]] = {
+        spec.series_id: {} for spec in _BLS_SPECS
+    }
+    for series in raw_series:
+        if not isinstance(series, dict):
+            continue
+        series_id = series.get("seriesID")
+        if not isinstance(series_id, str) or series_id not in values:
+            continue
+        raw_data = series.get("data")
+        if not isinstance(raw_data, list):
+            continue
+        for item in raw_data:
+            if not isinstance(item, dict):
+                continue
+            year = item.get("year")
+            period = item.get("period")
+            value = _parse_number(item.get("value") if isinstance(item.get("value"), str) else None)
+            if not (
+                isinstance(year, str)
+                and isinstance(period, str)
+                and len(period) == 3
+                and period.startswith("M")
+                and period[1:].isdigit()
+                and value is not None
+            ):
+                continue
+            month = int(period[1:])
+            if not 1 <= month <= 12:
+                continue
+            try:
+                observed_on = date(int(year), month, 1)
+            except ValueError:
+                continue
+            if observed_on <= cutoff_date:
+                values[series_id][observed_on] = value
+    return {
+        series_id: tuple(
+            _Observation(observed_on, value)
+            for observed_on, value in sorted(series_values.items())
+        )
+        for series_id, series_values in values.items()
+    }
+
+
+def _build_official_series(
+    spec: _OfficialSeriesSpec,
+    observations: tuple[_Observation, ...],
+    collected_at: datetime,
+) -> _SeriesResult:
+    if not observations:
+        return _SeriesResult(
+            facts=(),
+            data_gaps=(f"{spec.metric} 최신 유효값이 없습니다.",),
+            stale_fact_ids=(),
+            blocking_reasons=(),
+        )
+    latest = observations[-1]
+    facts = [
+        _build_official_fact(spec, latest, collected_at, kind="level")
+    ]
+    data_gaps: list[str] = []
+    baseline = _find_baseline(
+        observations,
+        latest.observed_on,
+        lookback_days=spec.lookback_days,
+        max_lag_days=spec.baseline_max_lag_days,
+    )
+    if baseline is None:
+        data_gaps.append(f"{spec.metric}의 유효한 {spec.change_label} 기준값이 없습니다.")
+    else:
+        change = _calculate_official_change(spec, latest.value, baseline.value)
+        if change is None:
+            data_gaps.append(f"{spec.metric}의 {spec.change_label} 기준값이 0입니다.")
+        else:
+            facts.append(
+                _build_official_fact(
+                    spec,
+                    _Observation(latest.observed_on, change),
+                    collected_at,
+                    kind="change",
+                )
+            )
+    fact_ids = tuple(fact.fact_id for fact in facts)
+    age_days = (collected_at.date() - latest.observed_on).days
+    if age_days <= spec.max_age_days:
+        return _SeriesResult(tuple(facts), tuple(data_gaps), (), ())
+    return _SeriesResult(
+        facts=tuple(facts),
+        data_gaps=tuple(data_gaps),
+        stale_fact_ids=fact_ids,
+        blocking_reasons=(
+            f"{spec.metric} 최신값이 {age_days}일 전 자료여서 허용 수명을 초과했습니다.",
+        ),
+    )
+
+
+def _calculate_official_change(
+    spec: _OfficialSeriesSpec,
+    latest_value: float,
+    baseline_value: float,
+) -> float | None:
+    if spec.change_mode == "percentage_point":
+        return round(latest_value - baseline_value, 6)
+    if baseline_value == 0:
+        return None
+    return round((latest_value / baseline_value - 1) * 100, 6)
+
+
+def _build_official_fact(
+    spec: _OfficialSeriesSpec,
+    observation: _Observation,
+    collected_at: datetime,
+    *,
+    kind: Literal["level", "change"],
+) -> Fact:
+    is_change = kind == "change"
+    return Fact(
+        fact_id=(
+            f"{spec.fact_prefix}:change_{spec.lookback_days}d"
+            if is_change
+            else f"{spec.fact_prefix}:level"
+        ),
+        source_id=spec.source_id,
+        metric=f"{spec.metric} {spec.change_label}" if is_change else spec.metric,
+        value=observation.value,
+        unit=(
+            "percentage_point"
+            if is_change and spec.change_mode == "percentage_point"
+            else "percent"
+            if is_change
+            else spec.unit
+        ),
+        currency=None if is_change else spec.currency,
+        observed_at=_at_utc_midnight(observation.observed_on),
+        published_at=collected_at,
+        collected_at=collected_at,
+        publication_time_basis=PublicationTimeBasis.RETRIEVAL_TIME_PROXY,
+    )
+
+
+def _unavailable_macro_section(
+    section_id: MacroSectionId,
+    reason: str,
+) -> ResearchSection:
+    return ResearchSection(
+        section_id=section_id,
+        title=SECTION_TITLES[section_id],
+        status=SectionStatus.UNAVAILABLE,
+        required=True,
+        blocking_reasons=(reason,),
+    )
+
+
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _parse_date_prefix(raw: str | None) -> date | None:
+    if raw is None or len(raw) < 10:
+        return None
+    return _parse_date(raw[:10])
 
 
 def build_ecos_unavailable_section(api_key: str | None) -> ResearchSection | None:

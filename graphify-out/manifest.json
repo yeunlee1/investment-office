@@ -210,8 +210,8 @@
     "semantic_hash": ""
   },
   "tests/test_site_pages.py": {
-    "mtime": 1783797031.3669357,
-    "ast_hash": "eb4f27b2a1253a526e83d47ba5bfd6f6",
+    "mtime": 1783798501.8854113,
+    "ast_hash": "8e7ee8c3cf447689cfbf8d1fcb8be9eb",
     "semantic_hash": ""
   },
   "tests/test_storage.py": {
@@ -420,8 +420,8 @@
     "semantic_hash": ""
   },
   "src/investment_office/templates/markets.html": {
-    "mtime": 1783793088.5500417,
-    "ast_hash": "2401c3c98f4bb206b8023ad17659c250",
+    "mtime": 1783798423.0904653,
+    "ast_hash": "d3b41aba3dd6bd0ff94ba53fc8d7cbee",
     "semantic_hash": ""
   }
 }

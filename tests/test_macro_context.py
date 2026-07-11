@@ -1,6 +1,8 @@
 # FRED 공통 거시 수집기의 값 계산과 품질 차단 정책을 시험한다
 from __future__ import annotations
 
+import io
+import zipfile
 from datetime import UTC, datetime
 
 import httpx
@@ -31,6 +33,13 @@ def _mock_client(content: str, requests: list[httpx.Request]) -> httpx.AsyncClie
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         return httpx.Response(200, text=content, request=request)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _mock_binary_client(content: bytes) -> httpx.AsyncClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=content, request=request)
 
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
@@ -79,6 +88,38 @@ async def test_fetch_uses_one_official_csv_request_and_builds_all_sections() -> 
     assert dgs10_level.collected_at == COLLECTED_AT
     assert dgs10_change.value == 20.0
     assert dgs10_change.unit == "percentage_point"
+
+
+@pytest.mark.asyncio
+async def test_fetch_merges_official_multi_series_zip_response() -> None:
+    first_ids = FRED_SERIES_IDS[:4]
+    second_ids = FRED_SERIES_IDS[4:]
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "daily-one.csv",
+            "observation_date,"
+            + ",".join(first_ids)
+            + "\n2026-06-10,1,2,3,4\n2026-07-10,5,6,7,8\n",
+        )
+        archive.writestr(
+            "daily-two.csv",
+            "observation_date,"
+            + ",".join(second_ids)
+            + "\n2026-06-10,1,2,3,4,5,6,7\n2026-07-10,5,6,7,8,9,10,11\n",
+        )
+        archive.writestr("README.txt", "설명")
+    http_client = _mock_binary_client(buffer.getvalue())
+    try:
+        result = await FredMacroContextClient(
+            client=http_client,
+            now_factory=lambda: COLLECTED_AT,
+        ).fetch()
+    finally:
+        await http_client.aclose()
+
+    assert len(result.facts) == len(FRED_SERIES_IDS) * 2
+    assert {section.status for section in result.sections} == {SectionStatus.COMPLETE}
 
 
 @pytest.mark.asyncio

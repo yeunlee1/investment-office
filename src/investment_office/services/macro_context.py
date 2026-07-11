@@ -5,6 +5,7 @@ import csv
 import hashlib
 import io
 import math
+import zipfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -27,6 +28,8 @@ FUTURE_GROWTH_INFLATION_SECTION_ID: Final = "macro.growth_inflation"
 LOOKBACK_DAYS: Final = 30
 BASELINE_MAX_LAG_DAYS: Final = 7
 DEFAULT_MAX_AGE_DAYS: Final = 7
+MAX_FRED_ARCHIVE_BYTES: Final = 5 * 1024 * 1024
+MAX_FRED_UNCOMPRESSED_BYTES: Final = 20 * 1024 * 1024
 
 MacroSectionId = Literal[
     "macro.rates",
@@ -195,7 +198,7 @@ class FredMacroContextClient:
 
         response = await self._get()
         collected_at = self._aware_now()
-        observations = _parse_fred_csv(response.text, collected_at.date())
+        observations = _parse_fred_content(response.content, collected_at.date())
         source = SourceRef(
             source_id=FRED_SOURCE_ID,
             name="Federal Reserve Economic Data",
@@ -363,6 +366,58 @@ def _parse_fred_csv(
             _Observation(observed_on, value) for observed_on, value in sorted(series_values.items())
         )
         for series_id, series_values in parsed.items()
+    }
+
+
+def _parse_fred_content(
+    content: bytes,
+    cutoff_date: date,
+) -> dict[str, tuple[_Observation, ...]]:
+    """단일 CSV와 여러 빈도별 CSV가 담긴 공식 ZIP 응답을 동일하게 읽는다."""
+
+    if len(content) > MAX_FRED_ARCHIVE_BYTES:
+        raise MacroContextError("FRED 응답이 허용 크기를 초과했습니다.")
+    if not zipfile.is_zipfile(io.BytesIO(content)):
+        try:
+            decoded = content.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise MacroContextError("FRED CSV 문자 인코딩을 읽을 수 없습니다.") from exc
+        return _parse_fred_csv(decoded, cutoff_date)
+
+    merged: dict[str, dict[date, float]] = {
+        series_id: {} for series_id in FRED_SERIES_IDS
+    }
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            members = [
+                member
+                for member in archive.infolist()
+                if not member.is_dir() and member.filename.casefold().endswith(".csv")
+            ]
+            if not members:
+                raise MacroContextError("FRED ZIP 응답에 CSV 파일이 없습니다.")
+            if sum(member.file_size for member in members) > MAX_FRED_UNCOMPRESSED_BYTES:
+                raise MacroContextError("FRED ZIP 압축 해제 크기가 허용 범위를 초과했습니다.")
+            for member in members:
+                try:
+                    decoded = archive.read(member).decode("utf-8-sig")
+                except UnicodeDecodeError as exc:
+                    raise MacroContextError(
+                        "FRED ZIP 안의 CSV 문자 인코딩을 읽을 수 없습니다."
+                    ) from exc
+                parsed = _parse_fred_csv(decoded, cutoff_date)
+                for series_id, observations in parsed.items():
+                    for observation in observations:
+                        merged[series_id][observation.observed_on] = observation.value
+    except zipfile.BadZipFile as exc:
+        raise MacroContextError("FRED ZIP 응답을 읽을 수 없습니다.") from exc
+
+    return {
+        series_id: tuple(
+            _Observation(observed_on, value)
+            for observed_on, value in sorted(series_values.items())
+        )
+        for series_id, series_values in merged.items()
     }
 
 

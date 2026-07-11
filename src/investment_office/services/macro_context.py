@@ -102,7 +102,7 @@ FRED_SERIES: Final = (
         "T10Y2Y",
         "미국 국채 10년물과 2년물 금리차",
         "macro.rates",
-        "percent",
+        "percentage_point",
         None,
         "percentage_point",
     ),

@@ -26,7 +26,11 @@ SIGNALS = {
         "percentage_point",
         -0.1,
     ),
-    "curve_10y2y": ("미국 국채 10년물과 2년물 금리차", "percent", 0.8),
+    "curve_10y2y": (
+        "미국 국채 10년물과 2년물 금리차",
+        "percentage_point",
+        0.8,
+    ),
     "broad_dollar_level": ("미 연준 광의 달러지수", "index_point", 115.0),
     "broad_dollar_change": ("미 연준 광의 달러지수 30일 변화", "percent", -2.0),
     "usdk_rw_level": ("원·달러 환율", "krw_per_usd", 1300.0),

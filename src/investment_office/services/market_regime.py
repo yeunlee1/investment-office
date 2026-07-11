@@ -138,7 +138,9 @@ _SIGNALS: Final = {
     "treasury_10y_change": _SignalSpec(
         "미국 국채 10년물 금리 30일 변화", "percentage_point"
     ),
-    "curve_10y2y": _SignalSpec("미국 국채 10년물과 2년물 금리차", "percent"),
+    "curve_10y2y": _SignalSpec(
+        "미국 국채 10년물과 2년물 금리차", "percentage_point"
+    ),
     "broad_dollar_level": _SignalSpec("미 연준 광의 달러지수", "index_point"),
     "broad_dollar_change": _SignalSpec("미 연준 광의 달러지수 30일 변화", "percent"),
     "usdk_rw_level": _SignalSpec("원·달러 환율", "krw_per_usd"),

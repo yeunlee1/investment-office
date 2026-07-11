@@ -454,7 +454,17 @@ function renderDecision(run) {
   if (elements.decisionCard) elements.decisionCard.hidden = !hasDecision;
   setText(elements.decisionRecommendation, decision.recommendation || decision.action, "결정 초안 대기");
   setText(elements.decisionConfidence, formatPercent(decision.confidence), "—");
-  setText(elements.decisionSummary, decision.summary, "분석 완료 후 위원장 초안이 표시됩니다.");
+  const positionCap = Number(decision.position_cap_pct);
+  const riskGateSummary = decision.risk_eligible === false
+    ? "위험 정책상 신규 매수가 허용되지 않습니다."
+    : Number.isFinite(positionCap) && positionCap > 0
+      ? `위험 정책상 최대 비중은 ${positionCap.toFixed(2)}%입니다.`
+      : "";
+  setText(
+    elements.decisionSummary,
+    [riskGateSummary, decision.summary].filter(Boolean).join(" "),
+    "분석 완료 후 위원장 초안이 표시됩니다.",
+  );
   renderTextList(elements.decisionPoints, decision.key_points, "핵심 근거 대기 중입니다.");
   renderTextList(elements.decisionRisks, decision.risks, "위험 신호 대기 중입니다.");
 

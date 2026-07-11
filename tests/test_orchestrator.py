@@ -1,6 +1,7 @@
 # 투자위원회의 단계별 에이전트 실행과 사람 검토 상태 전이를 검증한다.
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 from uuid import uuid4
 
@@ -13,6 +14,7 @@ from investment_office.domain import (
     AgentRole,
     AnalysisRunStatus,
     CandidateStatus,
+    Event,
     EventType,
     ReviewDecision,
     Snapshot,
@@ -40,10 +42,9 @@ class FakeSnapshot(BaseModel):
 
 
 class FakeRiskResult(BaseModel):
-    position_pct: float = 4.0
-    risk_units: float = 0.5
-    entry_price: float = 215.0
-    stop_price: float = 204.0
+    action: str = "size_position"
+    eligible: bool = True
+    position_cap_pct: float = 4.0
     warnings: list[str] = ["실적 발표 전후 변동성을 다시 확인한다."]
 
 
@@ -98,26 +99,65 @@ class FakeProvider:
 
 def fake_risk(snapshot: FakeSnapshot, chairman: dict[str, Any]) -> FakeRiskResult:
     assert snapshot.ticker == chairman["ticker"]
-    return FakeRiskResult(entry_price=snapshot.close)
+    return FakeRiskResult()
+
+
+def blocked_risk(snapshot: FakeSnapshot, chairman: dict[str, Any]) -> FakeRiskResult:
+    assert snapshot.ticker == chairman["ticker"]
+    return FakeRiskResult(action="avoid", eligible=False, position_cap_pct=0.0)
+
+
+class SiblingFailureProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.bear_started = asyncio.Event()
+        self.bear_cancelled = False
+
+    async def analyze(
+        self,
+        role: str,
+        ticker: str,
+        snapshot: dict[str, Any],
+        context: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if role == "bull":
+            await self.bear_started.wait()
+            raise RuntimeError("bull 분석 실패")
+        if role == "bear":
+            self.bear_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.bear_cancelled = True
+                raise
+        return await super().analyze(role, ticker, snapshot, context)
+
+
+class EventFailingStorage(InMemoryStorage):
+    def append_event(self, event: Event) -> Event:
+        del event
+        raise RuntimeError("이벤트 저장 실패")
 
 
 def make_committee(
     *,
     provider: FakeProvider | None = None,
     market_data: FakeMarketData | None = None,
+    storage: InMemoryStorage | None = None,
+    risk_function: RiskFunction | None = None,
 ) -> tuple[InvestmentCommittee, InMemoryStorage, FakeProvider, FakeMarketData]:
-    storage = InMemoryStorage()
+    resolved_storage = storage or InMemoryStorage()
     resolved_provider = provider or FakeProvider()
     resolved_market = market_data or FakeMarketData()
     committee = InvestmentCommittee(
-        storage=storage,
+        storage=resolved_storage,
         provider=cast(AnalysisProvider, resolved_provider),
         market_data=cast(YahooFinanceClient, resolved_market),
         broker=EventBroker(),
         max_parallel_agents=3,
-        risk_function=cast(RiskFunction, fake_risk),
+        risk_function=risk_function or cast(RiskFunction, fake_risk),
     )
-    return committee, storage, resolved_provider, resolved_market
+    return committee, resolved_storage, resolved_provider, resolved_market
 
 
 @pytest.mark.asyncio
@@ -195,17 +235,13 @@ async def test_six_agent_analysis_then_human_review_state(
     assert completed.status is AnalysisRunStatus.COMPLETED
     assert market.requested_tickers == ["AAPL"]
     assert {role for role, _, _ in provider.calls} == {
-        "fundamental",
         "technical",
-        "news",
         "bull",
         "bear",
         "head_trader",
     }
     assert {role: context_size for role, _, context_size in provider.calls} == {
-        "fundamental": 0,
         "technical": 0,
-        "news": 0,
         "bull": 3,
         "bear": 3,
         "head_trader": 5,
@@ -221,12 +257,21 @@ async def test_six_agent_analysis_then_human_review_state(
         AgentRole.HEAD_TRADER,
         AgentRole.RISK_MANAGER,
     }
+    outputs_by_role = {output.role: output for output in outputs}
+    for role in (AgentRole.FUNDAMENTAL, AgentRole.NEWS):
+        output = outputs_by_role[role]
+        assert output.confidence == 0.0
+        assert output.evidence == []
+        assert output.data["stance"] == "neutral"
+        assert output.data["data_gaps"]
     draft = committee.build_run_payload(run.id)
     assert draft["status"] == "review"
     assert draft["progress"] == 100
     assert len(draft["agents"]) == 6
     assert draft["decision"]["human_approval_required"] is True
     assert draft["decision"]["auto_trade"] is False
+    assert draft["decision"]["risk_eligible"] is True
+    assert draft["decision"]["position_cap_pct"] == 4.0
 
     review = await committee.record_review(run.id, decision, "리스크 조건을 확인해 기록한다.")
 
@@ -270,6 +315,56 @@ async def test_agent_failure_is_persisted_without_reviewable_decision() -> None:
             ReviewDecision.APPROVED,
             "실패한 분석은 승인하지 않는다.",
         )
+
+
+@pytest.mark.asyncio
+async def test_risk_block_overrides_bullish_chairman_recommendation() -> None:
+    committee, storage, _, _ = make_committee(
+        risk_function=cast(RiskFunction, blocked_risk),
+    )
+    run = await committee.create_analysis("NVDA")
+
+    await committee.run_analysis(run.id)
+
+    decision = committee.build_run_payload(run.id)["decision"]
+    assert decision["recommendation"] == "avoid"
+    assert decision["risk_eligible"] is False
+    assert decision["position_cap_pct"] == 0.0
+    assert "위험 정책이 신규 포지션을 허용하지 않습니다." in decision["risks"]
+
+
+@pytest.mark.asyncio
+async def test_stage_failure_cancels_and_persists_sibling_agent() -> None:
+    provider = SiblingFailureProvider()
+    committee, storage, _, _ = make_committee(provider=provider)
+    run = await committee.create_analysis("AMD")
+
+    await committee.run_analysis(run.id)
+
+    assert provider.bear_cancelled is True
+    outputs = {output.role: output for output in storage.list_agent_outputs(run.id)}
+    assert outputs[AgentRole.BULL].status is AgentOutputStatus.FAILED
+    assert outputs[AgentRole.BEAR].status is AgentOutputStatus.FAILED
+    assert outputs[AgentRole.BEAR].error_message == "에이전트 실행 태스크가 취소되었습니다."
+    await asyncio.sleep(0)
+    refreshed = {output.role: output for output in storage.list_agent_outputs(run.id)}
+    assert refreshed[AgentRole.BEAR].status is AgentOutputStatus.FAILED
+    assert AgentRole.HEAD_TRADER not in refreshed
+
+
+@pytest.mark.asyncio
+async def test_event_failure_does_not_leave_analysis_in_inconsistent_state() -> None:
+    storage = EventFailingStorage()
+    committee, _, _, _ = make_committee(storage=storage)
+    run = await committee.create_analysis("GOOG")
+
+    await committee.run_analysis(run.id)
+
+    completed = storage.get_analysis_run(run.id)
+    assert completed is not None
+    assert completed.status is AnalysisRunStatus.COMPLETED
+    assert committee.build_run_payload(run.id)["decision"] is not None
+    assert storage.list_events(analysis_run_id=run.id) == []
 
 
 @pytest.mark.asyncio

@@ -191,7 +191,14 @@ function renderDetail({ run, tasks, committee, minutes, archive }) {
     const verdict = createElement("div", "decision-summary-line");
     verdict.append(createElement("strong", "", decision.recommendation || decision.action || "결론 없음"));
     verdict.append(createElement("span", "", formatPercent(decision.confidence)));
-    decisionSection.append(verdict, createElement("p", "", decision.summary || "요약 없음"));
+    const positionCap = Number(decision.position_cap_pct);
+    const riskGateSummary = decision.risk_eligible === false
+      ? "위험 정책상 신규 매수가 허용되지 않습니다."
+      : Number.isFinite(positionCap) && positionCap > 0
+        ? `위험 정책상 최대 비중은 ${positionCap.toFixed(2)}%입니다.`
+        : "";
+    const summary = [riskGateSummary, decision.summary].filter(Boolean).join(" ");
+    decisionSection.append(verdict, createElement("p", "", summary || "요약 없음"));
     appendTwoLists(decisionSection, "핵심 근거", decision.key_points, "주요 리스크", decision.risks);
   } else {
     decisionSection.append(createElement("p", "empty-state", "이 실행에는 저장된 결정 초안이 없습니다."));

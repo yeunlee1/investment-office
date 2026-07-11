@@ -54,10 +54,9 @@ class FakeSnapshot(BaseModel):
 
 
 class FakeRiskResult(BaseModel):
-    position_pct: float = 3.0
-    risk_units: float = 0.5
-    entry_price: float = 215.0
-    stop_price: float = 204.0
+    action: str = "size_position"
+    eligible: bool = True
+    position_cap_pct: float = 3.0
     warnings: list[str] = ["최종 주문은 사람이 별도로 판단한다."]
 
 
@@ -116,7 +115,7 @@ class FakeProvider:
 
 def fake_risk(snapshot: FakeSnapshot, chairman: dict[str, Any]) -> FakeRiskResult:
     assert snapshot.ticker == chairman["ticker"]
-    return FakeRiskResult(entry_price=snapshot.close)
+    return FakeRiskResult()
 
 
 def make_app(*, storage: InMemoryStorage | None = None) -> tuple[FastAPI, FakeMarketData]:

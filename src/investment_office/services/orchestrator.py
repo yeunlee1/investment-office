@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+import logging
+from collections.abc import Callable, Coroutine
 from typing import Any, Literal, Protocol, cast
 from uuid import UUID
 
@@ -39,6 +40,7 @@ DISCOVERY_ANALYSIS_THESIS = (
     "가격·거래량 기반 1차 후보 발굴을 통과했다. 매수 보장이 아니므로 "
     "실적·밸류에이션·뉴스 데이터 공백과 무효화 조건까지 심층 검토한다."
 )
+logger = logging.getLogger(__name__)
 
 
 class AnalysisProvider(Protocol):
@@ -172,13 +174,13 @@ class InvestmentCommittee:
                 )
             )
 
-            first_stage = await asyncio.gather(
+            first_stage = await self._run_agent_stage(
                 self._run_agent(run, candidate, AgentRole.FUNDAMENTAL, market_payload, []),
                 self._run_agent(run, candidate, AgentRole.TECHNICAL, market_payload, []),
                 self._run_agent(run, candidate, AgentRole.NEWS, market_payload, []),
             )
             first_context = [result.model_dump(mode="json") for result in first_stage]
-            debate = await asyncio.gather(
+            debate = await self._run_agent_stage(
                 self._run_agent(run, candidate, AgentRole.BULL, market_payload, first_context),
                 self._run_agent(run, candidate, AgentRole.BEAR, market_payload, first_context),
             )
@@ -411,6 +413,22 @@ class InvestmentCommittee:
             for snapshot in self.storage.list_snapshots(run_id, kind=SnapshotKind.AGENT_STATE)
         )
 
+    @staticmethod
+    async def _run_agent_stage(
+        *jobs: Coroutine[Any, Any, AgentOutput],
+    ) -> list[AgentOutput]:
+        """한 단계가 실패하면 아직 실행 중인 형제 에이전트를 모두 회수한다."""
+
+        tasks = [asyncio.create_task(job) for job in jobs]
+        try:
+            return await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
     async def _run_agent(
         self,
         run: AnalysisRun,
@@ -434,10 +452,13 @@ class InvestmentCommittee:
             payload={"role": role.value, "status": "running"},
         )
         try:
-            async with self._semaphore:
-                result = await self.provider.analyze(
-                    role.value, candidate.ticker, snapshot, context
-                )
+            if self._role_input_is_missing(role, snapshot):
+                result = self._data_gap_result(role, candidate.ticker)
+            else:
+                async with self._semaphore:
+                    result = await self.provider.analyze(
+                        role.value, candidate.ticker, snapshot, context
+                    )
             validated = JSON_DICT_ADAPTER.validate_python(result)
             evidence = [
                 Evidence(title=str(item.get("claim", "근거")), url=item.get("source_url"))
@@ -464,8 +485,23 @@ class InvestmentCommittee:
                 },
             )
             return output
+        except asyncio.CancelledError:
+            detail = "에이전트 실행 태스크가 취소되었습니다."
+            output.status = AgentOutputStatus.FAILED
+            output.error_message = detail
+            output.updated_at = utc_now()
+            self.storage.save_agent_output(output)
+            await self._record_event(
+                EventType.AGENT_OUTPUT_RECORDED,
+                f"{role.value} 에이전트 실행이 취소되었습니다.",
+                candidate=candidate,
+                run=run,
+                stream_type="fault",
+                payload={"role": role.value, "status": "failed", "error": detail},
+            )
+            raise
         except BaseException as exc:
-            if isinstance(exc, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             output.status = AgentOutputStatus.FAILED
             output.error_message = str(exc)[:4_000]
@@ -480,6 +516,35 @@ class InvestmentCommittee:
                 payload={"role": role.value, "status": "failed", "error": str(exc)[:500]},
             )
             raise
+
+    @staticmethod
+    def _role_input_is_missing(role: AgentRole, snapshot: dict[str, Any]) -> bool:
+        required_key = {
+            AgentRole.FUNDAMENTAL: "fundamentals",
+            AgentRole.NEWS: "news",
+        }.get(role)
+        if required_key is None:
+            return False
+        value = snapshot.get(required_key)
+        return not isinstance(value, (dict, list)) or not value
+
+    @staticmethod
+    def _data_gap_result(role: AgentRole, ticker: str) -> dict[str, Any]:
+        source_name = "재무·공시" if role is AgentRole.FUNDAMENTAL else "뉴스"
+        data_gap = f"검증 가능한 {source_name} 원문과 출처가 입력되지 않았습니다."
+        return {
+            "role": role.value,
+            "ticker": ticker,
+            "stance": "neutral",
+            "confidence": 0.0,
+            "summary": f"{data_gap} 이 역할의 방향성 판단을 중립으로 고정합니다.",
+            "key_points": ["제공된 가격·거래량 자료만으로 역할 범위를 추정하지 않았습니다."],
+            "evidence": [],
+            "risks": ["자료 없이 결론을 만들면 투자 판단이 왜곡될 수 있습니다."],
+            "recommendation": "검증 가능한 자료가 공급될 때까지 최종 판단에서 제외합니다.",
+            "data_gaps": [data_gap],
+            "invalidations": [f"검증 가능한 {source_name} 자료가 공급되면 다시 분석합니다."],
+        }
 
     async def _record_event(
         self,
@@ -498,7 +563,13 @@ class InvestmentCommittee:
             analysis_run_id=run.id,
             payload=JSON_DICT_ADAPTER.validate_python(payload or {}),
         )
-        self.storage.append_event(event)
+        try:
+            self.storage.append_event(event)
+        except Exception:
+            logger.exception(
+                "분석 이벤트 저장에 실패했습니다.",
+                extra={"analysis_run_id": str(run.id), "event_type": event_type.value},
+            )
         stream_payload: dict[str, Any] = {
             "event_id": str(event.id),
             "type": stream_type,
@@ -509,7 +580,13 @@ class InvestmentCommittee:
             "created_at": event.created_at.isoformat(),
             **(payload or {}),
         }
-        await self.broker.publish(stream_payload)
+        try:
+            await self.broker.publish(stream_payload)
+        except Exception:
+            logger.exception(
+                "분석 실시간 이벤트 발행에 실패했습니다.",
+                extra={"analysis_run_id": str(run.id), "event_type": event_type.value},
+            )
         return event
 
     def _require_run(self, run_id: UUID) -> AnalysisRun:
@@ -550,11 +627,27 @@ class InvestmentCommittee:
         risk: dict[str, Any],
     ) -> dict[str, Any]:
         stance = str(chairman.get("stance", "neutral"))
+        risk_action = str(risk.get("action", "avoid")).strip().casefold()
+        raw_position_cap = risk.get("position_cap_pct", 0.0)
+        position_cap_pct = (
+            float(raw_position_cap)
+            if isinstance(raw_position_cap, (int, float)) and not isinstance(raw_position_cap, bool)
+            else 0.0
+        )
+        risk_eligible = (
+            risk.get("eligible") is True
+            and risk_action == "size_position"
+            and position_cap_pct > 0
+        )
         recommendation = {
             "bullish": "conditional buy",
             "neutral": "hold and watch",
             "bearish": "avoid",
         }.get(stance, "hold and watch")
+        if not risk_eligible:
+            recommendation = (
+                "avoid" if risk_action == "avoid" or stance == "bearish" else "hold and watch"
+            )
         risk_warnings = risk.get("warnings", [])
         risks = [str(item) for item in chairman.get("risks", [])]
         if isinstance(risk_warnings, list):
@@ -563,6 +656,8 @@ class InvestmentCommittee:
                 for item in risk_warnings
                 if not str(item).startswith(("의장 위험:", "의장 무효화 조건:"))
             )
+        if not risk_eligible:
+            risks.insert(0, "위험 정책이 신규 포지션을 허용하지 않습니다.")
         risks = list(dict.fromkeys(risks))
         return {
             "ticker": candidate.ticker,
@@ -576,6 +671,8 @@ class InvestmentCommittee:
             "data_gaps": chairman.get("data_gaps", []),
             "chairman_recommendation": chairman.get("recommendation"),
             "risk_plan": risk,
+            "risk_eligible": risk_eligible,
+            "position_cap_pct": position_cap_pct,
             "human_approval_required": True,
             "auto_trade": False,
         }

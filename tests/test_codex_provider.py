@@ -143,6 +143,8 @@ async def test_analyze_uses_saved_auth_read_only_json_and_callbacks(
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-child")
     monkeypatch.setenv("CODEX_API_KEY", "must-not-reach-child")
+    monkeypatch.setenv("INVESTMENT_OFFICE_DATABASE_URL", "must-not-reach-child")
+    monkeypatch.setenv("UNRELATED_SECRET", "must-not-reach-child")
     captured, process = install_fake_spawn(monkeypatch, result=valid_result)
     statuses: list[dict[str, Any]] = []
     progress: list[dict[str, Any]] = []
@@ -164,13 +166,30 @@ async def test_analyze_uses_saved_auth_read_only_json_and_callbacks(
     assert "--ephemeral" in command
     assert "--ignore-user-config" in command
     assert "--ignore-rules" in command
+    assert "--strict-config" in command
     assert "--output-schema" in command
     assert "--json" in command
+    disabled_features = {
+        command[index + 1]
+        for index, item in enumerate(command[:-1])
+        if item == "--disable"
+    }
+    assert {
+        "apps",
+        "browser_use",
+        "computer_use",
+        "plugins",
+        "shell_tool",
+        "unified_exec",
+    } <= disabled_features
+    assert 'web_search="disabled"' in command
     assert command[-1] == "-"
     assert "shell" not in captured["options"]
     child_env = captured["options"]["env"]
     assert "OPENAI_API_KEY" not in child_env
     assert "CODEX_API_KEY" not in child_env
+    assert "INVESTMENT_OFFICE_DATABASE_URL" not in child_env
+    assert "UNRELATED_SECRET" not in child_env
     prompt = process.stdin.data.decode("utf-8")
     assert "어떤 도구도 사용하지 않는다" in prompt
     assert "입력에 없는 사실, 수치, 날짜, 출처 URL을 만들지 않는다" in prompt

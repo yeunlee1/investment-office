@@ -22,6 +22,53 @@ type CallbackResult = Awaitable[None] | None
 type EventCallback = Callable[[dict[str, Any]], CallbackResult]
 type NonEmptyString = Annotated[str, Field(min_length=1)]
 
+_CODEX_CHILD_ENV_ALLOWLIST = frozenset(
+    {
+        "APPDATA",
+        "CODEX_HOME",
+        "COMSPEC",
+        "HOME",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LANG",
+        "LOCALAPPDATA",
+        "LOGNAME",
+        "NO_COLOR",
+        "PATH",
+        "PATHEXT",
+        "SHELL",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "SYSTEMROOT",
+        "TEMP",
+        "TERM",
+        "TMP",
+        "TMPDIR",
+        "USER",
+        "USERPROFILE",
+        "WINDIR",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+    }
+)
+_DISABLED_CODEX_FEATURES = (
+    "apps",
+    "browser_use",
+    "browser_use_external",
+    "computer_use",
+    "hooks",
+    "image_generation",
+    "in_app_browser",
+    "multi_agent",
+    "plugins",
+    "remote_plugin",
+    "shell_snapshot",
+    "shell_tool",
+    "skill_mcp_dependency_install",
+    "unified_exec",
+)
+
 
 class CodexProviderError(RuntimeError):
     """Base error for every explicit Codex provider failure."""
@@ -192,7 +239,7 @@ class CodexProvider:
             )
 
     def _build_command(self, schema_path: Path, result_path: Path) -> list[str]:
-        return [
+        command = [
             self.command,
             "exec",
             "--ephemeral",
@@ -201,20 +248,28 @@ class CodexProvider:
             "--skip-git-repo-check",
             "--ignore-user-config",
             "--ignore-rules",
-            "--output-schema",
-            str(schema_path),
-            "--output-last-message",
-            str(result_path),
-            "--json",
-            "--color",
-            "never",
-            "-",
+            "--strict-config",
         ]
+        for feature in _DISABLED_CODEX_FEATURES:
+            command.extend(("--disable", feature))
+        command.extend(
+            [
+                "--config",
+                'web_search="disabled"',
+                "--output-schema",
+                str(schema_path),
+                "--output-last-message",
+                str(result_path),
+                "--json",
+                "--color",
+                "never",
+                "-",
+            ]
+        )
+        return command
 
     async def _run_process(self, command: list[str], prompt: str, cwd: Path) -> None:
-        child_env = os.environ.copy()
-        child_env.pop("OPENAI_API_KEY", None)
-        child_env.pop("CODEX_API_KEY", None)
+        child_env = self._build_child_environment()
         spawn_options: dict[str, Any] = {
             "stdin": asyncio.subprocess.PIPE,
             "stdout": asyncio.subprocess.PIPE,
@@ -287,6 +342,16 @@ class CodexProvider:
         if returncode != 0:
             detail = self._decode_detail(stderr) or self._decode_detail(stdout)
             raise CodexProcessError(returncode, detail or "세부 오류 출력이 없습니다.")
+
+    @staticmethod
+    def _build_child_environment() -> dict[str, str]:
+        """코덱스 인증과 실행에 필요한 비민감 환경 변수만 전달한다."""
+
+        return {
+            name: value
+            for name, value in os.environ.items()
+            if name.upper() in _CODEX_CHILD_ENV_ALLOWLIST or name.upper().startswith("LC_")
+        }
 
     async def _read_limited_stream(
         self,

@@ -5,9 +5,9 @@
     "semantic_hash": "308abf89aebfd36109b720a610e8f809"
   },
   "pyproject.toml": {
-    "mtime": 1783705304.9730463,
-    "ast_hash": "37dc88c4e302b6e68085dcecb8354e6c",
-    "semantic_hash": "37dc88c4e302b6e68085dcecb8354e6c"
+    "mtime": 1783787663.0974553,
+    "ast_hash": "a8f0fe311b141466517587292c76abda",
+    "semantic_hash": ""
   },
   "scripts/bootstrap_database.py": {
     "mtime": 1783707051.891992,
@@ -35,9 +35,9 @@
     "semantic_hash": "271839f7138096a101b6c422a1860c73"
   },
   "src/investment_office/config.py": {
-    "mtime": 1783705980.6552413,
-    "ast_hash": "0b9b7b8736fa7ebb3d80c32c6f165ba7",
-    "semantic_hash": "0b9b7b8736fa7ebb3d80c32c6f165ba7"
+    "mtime": 1783788273.7519045,
+    "ast_hash": "7d66849eaa03a63aadc38f847870f361",
+    "semantic_hash": ""
   },
   "src/investment_office/database.py": {
     "mtime": 1783705980.6562452,
@@ -50,19 +50,19 @@
     "semantic_hash": "220421b39d9720af6a479fb5d39c479e"
   },
   "src/investment_office/main.py": {
-    "mtime": 1783760729.6955743,
-    "ast_hash": "0246e306b98cd50009e14065fdd0ee6d",
+    "mtime": 1783788273.752906,
+    "ast_hash": "fc7a17b4554487749a652953f70dce8a",
     "semantic_hash": ""
   },
   "src/investment_office/services/__init__.py": {
-    "mtime": 1783704657.1412084,
-    "ast_hash": "5a1598c2bef7805cf82dc3d623173ea6",
-    "semantic_hash": "5a1598c2bef7805cf82dc3d623173ea6"
+    "mtime": 1783766017.519436,
+    "ast_hash": "675ff084fca4dcf549cf3dc1846efeff",
+    "semantic_hash": ""
   },
   "src/investment_office/services/codex_provider.py": {
-    "mtime": 1783705633.7101161,
-    "ast_hash": "001d86ce3b6b08ecceb762ab7884dd8f",
-    "semantic_hash": "001d86ce3b6b08ecceb762ab7884dd8f"
+    "mtime": 1783788391.3069606,
+    "ast_hash": "911b064992694a9fe03e51e4eedd477f",
+    "semantic_hash": ""
   },
   "src/investment_office/services/event_broker.py": {
     "mtime": 1783706404.3469572,
@@ -100,13 +100,13 @@
     "semantic_hash": "526babe69bdd555186f44e221eeea255"
   },
   "tests/test_api.py": {
-    "mtime": 1783761723.8299007,
-    "ast_hash": "72973968de85e994d7c513fb30e5a32e",
+    "mtime": 1783788343.3801768,
+    "ast_hash": "e181b0582aa277676eea580a129b19a1",
     "semantic_hash": ""
   },
   "tests/test_codex_provider.py": {
-    "mtime": 1783743818.2472556,
-    "ast_hash": "d140b468a6ed3811749ca1482af3557b",
+    "mtime": 1783788391.3079689,
+    "ast_hash": "c2c9d721437c207074116ca96a30083d",
     "semantic_hash": ""
   },
   "tests/test_market_data.py": {

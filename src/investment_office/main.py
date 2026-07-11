@@ -15,14 +15,16 @@ from uuid import UUID, uuid4
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from investment_office.config import Settings, get_settings
+from investment_office.config import LOOPBACK_HOSTS, Settings, get_settings
 from investment_office.database import DatabaseRuntime, create_database_runtime
 from investment_office.domain import AgentRole, AnalysisRunStatus, ReviewDecision, utc_now
 from investment_office.services.candidate_discovery import (
@@ -320,6 +322,36 @@ def create_app(
         version="0.1.0",
         lifespan=lifespan,
     )
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=list(LOOPBACK_HOSTS),
+        www_redirect=False,
+    )
+
+    @app.middleware("http")
+    async def reject_cross_origin_mutations(
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        """브라우저의 교차 출처 요청이 로컬 변경 API를 호출하지 못하게 한다."""
+
+        is_mutation = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        if request.url.path.startswith("/api/") and is_mutation:
+            origin = request.headers.get("origin")
+            expected_origin = str(request.base_url).rstrip("/").casefold()
+            if origin is not None and origin.rstrip("/").casefold() != expected_origin:
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"detail": "다른 출처에서는 로컬 변경 API를 호출할 수 없습니다."},
+                )
+            fetch_site = request.headers.get("sec-fetch-site")
+            if fetch_site is not None and fetch_site.casefold() not in {"same-origin", "none"}:
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"detail": "교차 사이트 변경 요청이 차단되었습니다."},
+                )
+        return await call_next(request)
+
     app.mount("/static", StaticFiles(directory=PACKAGE_ROOT / "static"), name="static")
 
     def committee(request: Request) -> InvestmentCommittee:

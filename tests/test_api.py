@@ -147,13 +147,63 @@ async def wait_for_status(
     raise AssertionError(f"run {run_id} did not reach {expected}")
 
 
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.0.10", "::1"])
+def test_settings_reject_non_loopback_hosts(host: str) -> None:
+    with pytest.raises(ValueError, match="127.0.0.1 또는 localhost"):
+        Settings(
+            host=host,
+            database_url="mariadb+pymysql://unused:unused@127.0.0.1:3307/unused",
+        )
+
+
+@pytest.mark.asyncio
+async def test_local_api_rejects_untrusted_hosts_and_cross_origin_mutations() -> None:
+    app, _ = make_app()
+
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://127.0.0.1",
+        ) as client:
+            untrusted_host = await client.get(
+                "/api/state",
+                headers={"host": "attacker.invalid"},
+            )
+            assert untrusted_host.status_code == 400
+
+            cross_origin = await client.post(
+                "/api/analyze",
+                headers={
+                    "origin": "https://attacker.invalid",
+                    "sec-fetch-site": "cross-site",
+                },
+                json={"ticker": "AAPL"},
+            )
+            assert cross_origin.status_code == 403
+            assert "다른 출처" in cross_origin.json()["detail"]
+
+            runs = await client.get("/api/runs")
+            assert runs.json()["summary"]["total"] == 0
+
+            same_origin = await client.post(
+                "/api/analyze",
+                headers={
+                    "origin": "http://127.0.0.1",
+                    "sec-fetch-site": "same-origin",
+                },
+                json={"ticker": "AAPL"},
+            )
+            assert same_origin.status_code == 202
+
+
 @pytest.mark.asyncio
 async def test_analysis_api_returns_202_then_supports_query_and_single_review() -> None:
     app, market = make_app()
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
             response = await client.post(
                 "/api/analyze",
                 json={"ticker": " aapl ", "thesis": "서비스 매출을 검토한다."},
@@ -201,7 +251,7 @@ async def test_manual_work_api_runs_real_provider_and_returns_stored_report() ->
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
             analysis = await client.post("/api/analyze", json={"ticker": "MSFT"})
             run_id = analysis.json()["run_id"]
             await wait_for_status(client, run_id, "review")
@@ -249,7 +299,7 @@ async def test_committee_api_builds_grounded_turns_and_human_gated_minutes() -> 
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
             analysis = await client.post("/api/analyze", json={"ticker": "NVDA"})
             run_id = analysis.json()["run_id"]
             await wait_for_status(client, run_id, "review")
@@ -327,7 +377,7 @@ async def test_schedule_and_decision_archive_apis_preserve_future_and_past_runs(
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
             scheduled_for = datetime.now(UTC) + timedelta(minutes=10)
             created = await client.post(
                 "/api/schedules",
@@ -375,7 +425,7 @@ async def test_due_schedule_is_dispatched_to_existing_analysis_pipeline() -> Non
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
             created = await client.post(
                 "/api/schedules",
                 json={
@@ -411,7 +461,7 @@ async def test_scheduler_poller_survives_temporary_storage_error() -> None:
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
             created = await client.post(
                 "/api/schedules",
                 json={
@@ -447,7 +497,7 @@ async def test_discovery_api_screens_then_runs_selected_candidates_with_human_ga
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
             screened = await client.post(
                 "/api/discoveries/screen",
                 json={"strategy": "balanced", "limit": 8},
@@ -511,7 +561,7 @@ async def test_run_list_filters_ui_status_and_returns_unlimited_summary() -> Non
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
             manual = await client.post("/api/analyze", json={"ticker": "AAPL"})
             assert manual.status_code == 202
             assert manual.json()["run"]["workflow"] == "manual"
@@ -590,7 +640,7 @@ async def test_site_navigation_replaces_game_entry_while_office_stays_available(
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
             landing = await client.get("/")
             office = await client.get("/office")
 

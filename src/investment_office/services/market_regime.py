@@ -56,6 +56,10 @@ class MarketRegimePolicy(BaseModel):
     ten_year_adverse_min_pct: float = 5.0
     ten_year_rise_adverse_min_pp: float = 0.35
     ten_year_rise_favorable_max_pp: float = 0.2
+    kr_base_rate_adverse_min_pct: float = 4.0
+    kr_ten_year_adverse_min_pct: float = 4.5
+    kr_curve_inversion_max_pp: float = 0.0
+    kr_curve_favorable_min_pp: float = 0.5
 
     broad_dollar_favorable_max_change_pct: float = -1.0
     broad_dollar_adverse_min_change_pct: float = 2.0
@@ -93,6 +97,8 @@ class MarketRegimePolicy(BaseModel):
     def validate_threshold_order(self) -> Self:
         if self.curve_inversion_max_pp >= self.curve_favorable_min_pp:
             raise ValueError("우호적 장단기 금리차는 역전 기준보다 커야 합니다.")
+        if self.kr_curve_inversion_max_pp >= self.kr_curve_favorable_min_pp:
+            raise ValueError("한국 우호적 장단기 금리차는 역전 기준보다 커야 합니다.")
         if not self.vix_favorable_max < self.vix_adverse_min < self.vix_crisis_min:
             raise ValueError("VIX 기준은 우호, 불리, 위기 순서로 증가해야 합니다.")
         if not self.oil_favorable_min_usd < self.oil_favorable_max_usd:
@@ -141,6 +147,9 @@ _SIGNALS: Final = {
     "curve_10y2y": _SignalSpec(
         "미국 국채 10년물과 2년물 금리차", "percentage_point"
     ),
+    "kr_base_rate": _SignalSpec("한국은행 기준금리", "percent"),
+    "kr_treasury_3y": _SignalSpec("한국 국고채 3년물 금리", "percent"),
+    "kr_treasury_10y": _SignalSpec("한국 국고채 10년물 금리", "percent"),
     "broad_dollar_level": _SignalSpec("미 연준 광의 달러지수", "index_point"),
     "broad_dollar_change": _SignalSpec("미 연준 광의 달러지수 30일 변화", "percent"),
     "usdk_rw_level": _SignalSpec("원·달러 환율", "krw_per_usd"),
@@ -214,7 +223,7 @@ class MarketRegimeEvaluator:
         resolved_market = market if isinstance(market, MarketId) else MarketId(market)
         index = _FactIndex(facts)
         evaluations = {
-            "rates": self._evaluate_rates(index),
+            "rates": self._evaluate_rates(index, resolved_market),
             "currency": self._evaluate_currency(index, resolved_market),
             "volatility": self._evaluate_volatility(index),
             "commodities": self._evaluate_commodities(index),
@@ -253,7 +262,13 @@ class MarketRegimeEvaluator:
             position_cap_multiplier=position_cap,
         )
 
-    def _evaluate_rates(self, index: _FactIndex) -> _AxisEvaluation:
+    def _evaluate_rates(
+        self,
+        index: _FactIndex,
+        market: MarketId,
+    ) -> _AxisEvaluation:
+        if market is MarketId.KR:
+            return self._evaluate_kr_rates(index)
         required, missing, warnings = _resolve_required(
             index,
             ("treasury_2y", "treasury_3y", "treasury_10y"),
@@ -310,6 +325,44 @@ class MarketRegimeEvaluator:
         else:
             state = RegimeState.NEUTRAL
         return _AxisEvaluation(state, tuple(evidence), tuple(warnings), frozenset(flags))
+
+    def _evaluate_kr_rates(self, index: _FactIndex) -> _AxisEvaluation:
+        required, missing, warnings = _resolve_required(
+            index,
+            ("kr_base_rate", "kr_treasury_3y", "kr_treasury_10y"),
+        )
+        if missing:
+            return _unknown_axis(required, warnings)
+
+        base_rate, three_year, ten_year = required
+        curve = ten_year.value - three_year.value
+        inverted = curve <= self.policy.kr_curve_inversion_max_pp
+        stressed = (
+            base_rate.value >= self.policy.kr_base_rate_adverse_min_pct
+            or ten_year.value >= self.policy.kr_ten_year_adverse_min_pct
+        )
+        flags: set[str] = set()
+        if inverted:
+            flags.add("curve_inverted")
+        if stressed:
+            flags.add("rates_stress")
+
+        if inverted or stressed:
+            state = RegimeState.ADVERSE
+        elif (
+            curve >= self.policy.kr_curve_favorable_min_pp
+            and base_rate.value < self.policy.kr_base_rate_adverse_min_pct
+            and ten_year.value < self.policy.kr_ten_year_adverse_min_pct
+        ):
+            state = RegimeState.FAVORABLE
+        else:
+            state = RegimeState.NEUTRAL
+        return _AxisEvaluation(
+            state,
+            required,
+            tuple(warnings),
+            frozenset(flags),
+        )
 
     def _evaluate_currency(
         self,

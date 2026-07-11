@@ -31,6 +31,9 @@ SIGNALS = {
         "percentage_point",
         0.8,
     ),
+    "kr_base_rate": ("한국은행 기준금리", "percent", 2.5),
+    "kr_treasury_3y": ("한국 국고채 3년물 금리", "percent", 3.0),
+    "kr_treasury_10y": ("한국 국고채 10년물 금리", "percent", 3.6),
     "broad_dollar_level": ("미 연준 광의 달러지수", "index_point", 115.0),
     "broad_dollar_change": ("미 연준 광의 달러지수 30일 변화", "percent", -2.0),
     "usdk_rw_level": ("원·달러 환율", "krw_per_usd", 1300.0),
@@ -95,6 +98,27 @@ def test_korean_market_applies_usdkrw_sensitivity_separately() -> None:
     assert "test:macro:usdk_rw_change" not in us_result.evidence_fact_ids
     assert "test:macro:usdk_rw_change" in kr_result.evidence_fact_ids
     assert any("원화 약세" in warning for warning in kr_result.warnings)
+
+
+def test_korean_market_uses_korean_rates_instead_of_us_rates() -> None:
+    facts = _facts(
+        treasury_2y=2.0,
+        treasury_3y=2.1,
+        treasury_10y=3.0,
+        curve_10y2y=1.0,
+        kr_base_rate=20.0,
+        kr_treasury_3y=20.0,
+        kr_treasury_10y=20.0,
+    )
+
+    us_result = MarketRegimeEvaluator().evaluate(market=MarketId.US, facts=facts)
+    kr_result = MarketRegimeEvaluator().evaluate(market=MarketId.KR, facts=facts)
+
+    assert us_result.regime.rates is RegimeState.FAVORABLE
+    assert kr_result.regime.rates is RegimeState.ADVERSE
+    assert "test:macro:kr_base_rate" in kr_result.evidence_fact_ids
+    assert "test:macro:treasury_2y" not in kr_result.evidence_fact_ids
+    assert kr_result.position_cap_multiplier <= 0.65
 
 
 def test_missing_required_axis_is_unknown_and_reduces_cap() -> None:

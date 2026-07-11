@@ -35,8 +35,8 @@
     "semantic_hash": ""
   },
   "src/investment_office/config.py": {
-    "mtime": 1783788273.7519045,
-    "ast_hash": "7d66849eaa03a63aadc38f847870f361",
+    "mtime": 1783793451.779883,
+    "ast_hash": "c2e2e68f4b1d366fd496da422c753195",
     "semantic_hash": ""
   },
   "src/investment_office/database.py": {
@@ -45,13 +45,13 @@
     "semantic_hash": ""
   },
   "src/investment_office/domain.py": {
-    "mtime": 1783705361.3837886,
-    "ast_hash": "220421b39d9720af6a479fb5d39c479e",
+    "mtime": 1783793578.9940171,
+    "ast_hash": "c555585e2d78e6e4f1cf2d43fa895692",
     "semantic_hash": ""
   },
   "src/investment_office/main.py": {
-    "mtime": 1783789421.5058997,
-    "ast_hash": "734fffcc2f54b96915c8788515a4a36f",
+    "mtime": 1783796947.1449451,
+    "ast_hash": "71e56892cd31975c070e14c18c3eb7cb",
     "semantic_hash": ""
   },
   "src/investment_office/services/__init__.py": {
@@ -60,18 +60,18 @@
     "semantic_hash": ""
   },
   "src/investment_office/services/candidate_discovery.py": {
-    "mtime": 1783748529.8654509,
-    "ast_hash": "9b81413f63cb2ba4c124aeebf77f6b2b",
+    "mtime": 1783791897.392717,
+    "ast_hash": "472d64d352288ccda5fe65056032e52b",
     "semantic_hash": ""
   },
   "src/investment_office/services/codex_provider.py": {
-    "mtime": 1783789577.9017074,
-    "ast_hash": "45e76626767d3aefe5e30539f11c9bbb",
+    "mtime": 1783797084.3119316,
+    "ast_hash": "e0819a11359cf3c04d9f69ec7f6485d8",
     "semantic_hash": ""
   },
   "src/investment_office/services/committee_broker.py": {
-    "mtime": 1783789784.5697289,
-    "ast_hash": "299e9e6b15d4bcd7dedc1e8422cb7b8c",
+    "mtime": 1783796233.7650704,
+    "ast_hash": "4f99e8478c7634f9498fb59f54871786",
     "semantic_hash": ""
   },
   "src/investment_office/services/decision_archive.py": {
@@ -90,13 +90,13 @@
     "semantic_hash": ""
   },
   "src/investment_office/services/orchestrator.py": {
-    "mtime": 1783789226.144835,
-    "ast_hash": "4ff9168c30b8853387278a85964de899",
+    "mtime": 1783797015.2109823,
+    "ast_hash": "f93f4a2c2555f7c01d9238a0176e7564",
     "semantic_hash": ""
   },
   "src/investment_office/services/prompts.py": {
-    "mtime": 1783743818.2472556,
-    "ast_hash": "4431e4dbefecabe3ee6c55244043335a",
+    "mtime": 1783796510.6079907,
+    "ast_hash": "54860d2f52c4a4a4440c74f75a3bccb7",
     "semantic_hash": ""
   },
   "src/investment_office/services/risk.py": {
@@ -110,13 +110,13 @@
     "semantic_hash": ""
   },
   "src/investment_office/services/work_items.py": {
-    "mtime": 1783789771.0285416,
-    "ast_hash": "1e0728784fcd795b9f1a0197991d5520",
+    "mtime": 1783796233.7640703,
+    "ast_hash": "8ccfac0dbe4864d9179a277632a9c419",
     "semantic_hash": ""
   },
   "src/investment_office/static/analysis.js": {
-    "mtime": 1783788669.943895,
-    "ast_hash": "1422a9863e5485b64666e6db0962d9e0",
+    "mtime": 1783795075.8014727,
+    "ast_hash": "ff7952b1b6b5c788170ef87d8114596b",
     "semantic_hash": ""
   },
   "src/investment_office/static/app.js": {
@@ -125,18 +125,18 @@
     "semantic_hash": ""
   },
   "src/investment_office/static/discovery.js": {
-    "mtime": 1783762998.0205882,
-    "ast_hash": "2d8fcae50dd0d56452ae675cc4ef1d06",
+    "mtime": 1783793529.5850835,
+    "ast_hash": "0b99f7a099b5ee2b019c0d3618e3a9df",
     "semantic_hash": ""
   },
   "src/investment_office/static/history.js": {
-    "mtime": 1783788669.9448931,
-    "ast_hash": "a5783c11e72ee354dacb79b94b4e9b16",
+    "mtime": 1783793536.971768,
+    "ast_hash": "e8a5b710eed1501e78ba4198eaf3d225",
     "semantic_hash": ""
   },
   "src/investment_office/static/hub.js": {
-    "mtime": 1783763217.9546638,
-    "ast_hash": "c3401d93db7c0897f36145b50e1d6afd",
+    "mtime": 1783793536.9737694,
+    "ast_hash": "8244207433b654574b5309a9f5cb80eb",
     "semantic_hash": ""
   },
   "src/investment_office/static/office.js": {
@@ -145,8 +145,8 @@
     "semantic_hash": ""
   },
   "src/investment_office/static/site-common.js": {
-    "mtime": 1783762311.4396696,
-    "ast_hash": "250dfbca9e41de7a8c89895379aee5ea",
+    "mtime": 1783793471.6741903,
+    "ast_hash": "bafec89680e562f9ecccf0ee5f19bf70",
     "semantic_hash": ""
   },
   "src/investment_office/storage.py": {
@@ -155,28 +155,28 @@
     "semantic_hash": ""
   },
   "tests/test_api.py": {
-    "mtime": 1783789421.5068958,
-    "ast_hash": "8779516a77cdf9105ceb9600cc238701",
+    "mtime": 1783797439.476655,
+    "ast_hash": "3fbae1f51735a948d02e86bda1eccf9c",
     "semantic_hash": ""
   },
   "tests/test_candidate_discovery.py": {
-    "mtime": 1783748779.4969559,
-    "ast_hash": "09306c522274c6dcffae4cf32b413899",
+    "mtime": 1783791921.0198345,
+    "ast_hash": "a30784aff62e1bbbcc699c38213d0a56",
     "semantic_hash": ""
   },
   "tests/test_codex_provider.py": {
-    "mtime": 1783789577.9037056,
-    "ast_hash": "19e5dc91cde7a1cf0381ddd0ff6b0dbc",
+    "mtime": 1783796954.284278,
+    "ast_hash": "36005259937d01927ec8a536996fccc8",
     "semantic_hash": ""
   },
   "tests/test_committee_broker.py": {
-    "mtime": 1783745082.6832898,
-    "ast_hash": "e342f996bcb12caedfd63936d2a6c1c6",
+    "mtime": 1783796465.3420591,
+    "ast_hash": "cba741fcd88f786427689097a8119b80",
     "semantic_hash": ""
   },
   "tests/test_dashboard_discovery.py": {
-    "mtime": 1783762998.0215895,
-    "ast_hash": "18d84d78def7df5e6bbf5e7463030fd7",
+    "mtime": 1783793595.694002,
+    "ast_hash": "0e0f6287e7ad3c11d71b73f3ea20d95e",
     "semantic_hash": ""
   },
   "tests/test_decision_archive.py": {
@@ -195,8 +195,8 @@
     "semantic_hash": ""
   },
   "tests/test_orchestrator.py": {
-    "mtime": 1783788729.1396074,
-    "ast_hash": "ba29a421141bec30c6fb55fabc10bd06",
+    "mtime": 1783797040.4172895,
+    "ast_hash": "cd8acaadc07b45c28fadb15f8623adf4",
     "semantic_hash": ""
   },
   "tests/test_risk.py": {
@@ -210,8 +210,8 @@
     "semantic_hash": ""
   },
   "tests/test_site_pages.py": {
-    "mtime": 1783763321.08398,
-    "ast_hash": "d4aff0c9eb065b3d21095fe6029c18ad",
+    "mtime": 1783797031.3669357,
+    "ast_hash": "eb4f27b2a1253a526e83d47ba5bfd6f6",
     "semantic_hash": ""
   },
   "tests/test_storage.py": {
@@ -220,8 +220,8 @@
     "semantic_hash": ""
   },
   "tests/test_work_items.py": {
-    "mtime": 1783789028.5661106,
-    "ast_hash": "1e17a12d41ddcae62a45fc946d53046a",
+    "mtime": 1783796449.155772,
+    "ast_hash": "f0361cb2a40fde7230b78eaa92abc36e",
     "semantic_hash": ""
   },
   ".codex/skills/graphify/SKILL.md": {
@@ -275,23 +275,23 @@
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1783745738.5820107,
-    "ast_hash": "74f859bd65249fd3de979ca8d667e585",
+    "mtime": 1783796901.9300475,
+    "ast_hash": "869239e3f30f7f99d18124d9b22312f9",
     "semantic_hash": ""
   },
   "src/investment_office/templates/analysis.html": {
-    "mtime": 1783762702.1159446,
-    "ast_hash": "fbd34d5a88928c4b75757686d5970f3d",
+    "mtime": 1783793038.0487204,
+    "ast_hash": "c9e75ed3a865897f45416014f0adad0b",
     "semantic_hash": ""
   },
   "src/investment_office/templates/base.html": {
-    "mtime": 1783760710.5627682,
-    "ast_hash": "c447900ab5ca8cb1cd927d399af0bdf7",
+    "mtime": 1783793038.0477195,
+    "ast_hash": "3dcc29fe6c7686f13325d2d69a05deda",
     "semantic_hash": ""
   },
   "src/investment_office/templates/discovery.html": {
-    "mtime": 1783760874.1345985,
-    "ast_hash": "47146973825b9beacd53e8b0c0cfe9c1",
+    "mtime": 1783793038.0497203,
+    "ast_hash": "bb22b915d9865cd3513efbacf3c1b7c1",
     "semantic_hash": ""
   },
   "src/investment_office/templates/history.html": {
@@ -307,6 +307,121 @@
   "src/investment_office/templates/office.html": {
     "mtime": 1783756227.7386496,
     "ast_hash": "e7bb1b697ea0ea06c111b131eb8725bf",
+    "semantic_hash": ""
+  },
+  "src/investment_office/services/research_contracts.py": {
+    "mtime": 1783794071.7799587,
+    "ast_hash": "28bd6f350bc00c639f0798e35b187630",
+    "semantic_hash": ""
+  },
+  "src/investment_office/services/company_research.py": {
+    "mtime": 1783796425.580899,
+    "ast_hash": "1ff2f1d2a0fcebee3fb2411efc5ce5ed",
+    "semantic_hash": ""
+  },
+  "src/investment_office/services/ecos_context.py": {
+    "mtime": 1783796229.3386059,
+    "ast_hash": "ed1775b896a426e8164f8bf1bd24404c",
+    "semantic_hash": ""
+  },
+  "src/investment_office/services/instrument_identity.py": {
+    "mtime": 1783791601.7329824,
+    "ast_hash": "bc33c1263b7c55a0f8372c5208cbb5a9",
+    "semantic_hash": ""
+  },
+  "src/investment_office/services/macro_context.py": {
+    "mtime": 1783797482.8632596,
+    "ast_hash": "f28ee97e1d96bbf23a27bd8c661f11f7",
+    "semantic_hash": ""
+  },
+  "src/investment_office/services/market_overview.py": {
+    "mtime": 1783796250.3343005,
+    "ast_hash": "c3a2870b41a9a5053d57e019efe01530",
+    "semantic_hash": ""
+  },
+  "src/investment_office/services/market_regime.py": {
+    "mtime": 1783796293.3281593,
+    "ast_hash": "19ebb50e6acc08f71a3a60b8bc850c1a",
+    "semantic_hash": ""
+  },
+  "src/investment_office/services/price_gateway.py": {
+    "mtime": 1783796773.0950732,
+    "ast_hash": "03bf4e3125c09571d06717d5e0411871",
+    "semantic_hash": ""
+  },
+  "src/investment_office/services/research_pipeline.py": {
+    "mtime": 1783797531.5436952,
+    "ast_hash": "928b5f9b605c4a66ee16490315bc6cf3",
+    "semantic_hash": ""
+  },
+  "src/investment_office/services/source_registry.py": {
+    "mtime": 1783797084.3129306,
+    "ast_hash": "0f2f6cc5c8a281d394f7f5434573dd73",
+    "semantic_hash": ""
+  },
+  "src/investment_office/static/markets.js": {
+    "mtime": 1783796250.3352985,
+    "ast_hash": "b24c47af96b3ac0e3c00ca3e372fc921",
+    "semantic_hash": ""
+  },
+  "tests/test_company_research.py": {
+    "mtime": 1783796425.5828953,
+    "ast_hash": "9f14c863574dd4da682be79ba9d07e49",
+    "semantic_hash": ""
+  },
+  "tests/test_ecos_context.py": {
+    "mtime": 1783796229.3386059,
+    "ast_hash": "88225b590b4ed35bdf24796b5608eb5f",
+    "semantic_hash": ""
+  },
+  "tests/test_instrument_identity.py": {
+    "mtime": 1783791576.4816227,
+    "ast_hash": "6c6461e6b89687638454d7fe36661c9d",
+    "semantic_hash": ""
+  },
+  "tests/test_macro_context.py": {
+    "mtime": 1783797503.102061,
+    "ast_hash": "51d3606f91ea6c580a51e4494df5dcd2",
+    "semantic_hash": ""
+  },
+  "tests/test_market_overview.py": {
+    "mtime": 1783796544.5099995,
+    "ast_hash": "d9952b567833b661c63d91ab56f13863",
+    "semantic_hash": ""
+  },
+  "tests/test_market_regime.py": {
+    "mtime": 1783796309.2083027,
+    "ast_hash": "2daa61468a1ba63fea85d0f64de44e9c",
+    "semantic_hash": ""
+  },
+  "tests/test_price_gateway.py": {
+    "mtime": 1783796856.6790855,
+    "ast_hash": "4347919d203c70d58864f4060d4698e2",
+    "semantic_hash": ""
+  },
+  "tests/test_research_contracts.py": {
+    "mtime": 1783791308.1457489,
+    "ast_hash": "0c45191b810642b4843803dd4433a170",
+    "semantic_hash": ""
+  },
+  "tests/test_research_pipeline.py": {
+    "mtime": 1783797318.834342,
+    "ast_hash": "b652e1696e336aea74733aaa8ad6b394",
+    "semantic_hash": ""
+  },
+  "tests/test_source_registry.py": {
+    "mtime": 1783796940.3708096,
+    "ast_hash": "b796df718cbefb14d4af0d822062f4ea",
+    "semantic_hash": ""
+  },
+  "docs/\uc2dc\uc7a5_\uc5f0\uad6c_\uc124\uacc4.md": {
+    "mtime": 1783797531.5446928,
+    "ast_hash": "65ea7968307d40faea5d8dc1f9c31d79",
+    "semantic_hash": ""
+  },
+  "src/investment_office/templates/markets.html": {
+    "mtime": 1783793088.5500417,
+    "ast_hash": "2401c3c98f4bb206b8023ad17659c250",
     "semantic_hash": ""
   }
 }

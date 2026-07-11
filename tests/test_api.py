@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
@@ -18,7 +19,7 @@ from starlette.types import Message, Scope
 
 from investment_office.config import Settings
 from investment_office.domain import AnalysisRun
-from investment_office.main import create_app
+from investment_office.main import _log_background_task_failure, create_app
 from investment_office.services.market_data import YahooFinanceClient
 from investment_office.services.orchestrator import AnalysisProvider, RiskFunction
 from investment_office.storage import InMemoryStorage
@@ -144,6 +145,21 @@ async def wait_for_status(
             return run
         await asyncio.sleep(0.01)
     raise AssertionError(f"run {run_id} did not reach {expected}")
+
+
+@pytest.mark.asyncio
+async def test_background_task_failure_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    async def fail() -> None:
+        raise RuntimeError("백그라운드 검증 실패")
+
+    task = asyncio.create_task(fail(), name="백그라운드-검증")
+    await asyncio.sleep(0)
+
+    with caplog.at_level(logging.ERROR, logger="investment_office.main"):
+        _log_background_task_failure(task)
+
+    assert "백그라운드-검증" in caplog.text
+    assert "백그라운드 검증 실패" in caplog.text
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.0.10", "::1"])

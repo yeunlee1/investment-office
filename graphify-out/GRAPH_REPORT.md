@@ -1,16 +1,16 @@
 # Graph Report - investment-office  (2026-07-12)
 
 ## Corpus Check
-- 56 files · ~68,390 words
+- 56 files · ~68,983 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1197 nodes · 4049 edges · 96 communities (40 shown, 56 thin omitted)
-- Extraction: 70% EXTRACTED · 30% INFERRED · 0% AMBIGUOUS · INFERRED: 1221 edges (avg confidence: 0.54)
+- 1207 nodes · 4121 edges · 90 communities (40 shown, 50 thin omitted)
+- Extraction: 70% EXTRACTED · 30% INFERRED · 0% AMBIGUOUS · INFERRED: 1233 edges (avg confidence: 0.54)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `4678da90`
+- Built from commit: `c889097a`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -50,6 +50,7 @@
 - interact
 - submitDiscoveryAnalysis
 - Settings
+- test_scheduled_analysis.py
 - GateProvider
 - AnalysisRun
 - test_dashboard_discovery.py
@@ -61,7 +62,6 @@
 - Protocol
 - StrEnum
 - Any
-- BaseModel
 - Any
 - BaseModel
 - JsonValue
@@ -83,11 +83,6 @@
 - Any
 - BaseModel
 - datetime
-- RuntimeError
-- StrEnum
-- UUID
-- Any
-- BaseModel
 - RuntimeError
 - StrEnum
 - UUID
@@ -102,40 +97,39 @@
 - Any
 - AsyncClient
 - BaseModel
-- Any
 
 ## God Nodes (most connected - your core abstractions)
-1. `Storage` - 77 edges
-2. `Snapshot` - 72 edges
-3. `AnalysisProvider` - 72 edges
-4. `Event` - 63 edges
-5. `CommitteeBroker` - 63 edges
-6. `SnapshotKind` - 62 edges
-7. `AgentRole` - 59 edges
-8. `AnalysisRunStatus` - 58 edges
-9. `EventBroker` - 58 edges
-10. `InvestmentCommittee` - 55 edges
+1. `Storage` - 78 edges
+2. `AnalysisProvider` - 74 edges
+3. `Snapshot` - 73 edges
+4. `AnalysisRunStatus` - 67 edges
+5. `AgentRole` - 65 edges
+6. `Event` - 63 edges
+7. `CommitteeBroker` - 63 edges
+8. `SnapshotKind` - 62 edges
+9. `EventBroker` - 60 edges
+10. `AnalysisRun` - 56 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `test_settings_reject_non_loopback_hosts()` --calls--> `Settings`  [INFERRED]
   tests/test_api.py → src/investment_office/config.py
-- `EventFailingStorage` --uses--> `AnalysisRunStatus`  [INFERRED]
+- `EventFailingStorage` --uses--> `CandidateStatus`  [INFERRED]
   tests/test_orchestrator.py → src/investment_office/domain.py
-- `FakeMarketData` --uses--> `AnalysisRunStatus`  [INFERRED]
+- `FakeMarketData` --uses--> `CandidateStatus`  [INFERRED]
   tests/test_orchestrator.py → src/investment_office/domain.py
-- `FakeProvider` --uses--> `AnalysisRunStatus`  [INFERRED]
+- `FakeProvider` --uses--> `CandidateStatus`  [INFERRED]
   tests/test_orchestrator.py → src/investment_office/domain.py
-- `FakeRiskResult` --uses--> `AnalysisRunStatus`  [INFERRED]
+- `FakeRiskResult` --uses--> `CandidateStatus`  [INFERRED]
   tests/test_orchestrator.py → src/investment_office/domain.py
 
 ## Import Cycles
 - None detected.
 
-## Communities (96 total, 56 thin omitted)
+## Communities (90 total, 50 thin omitted)
 
 ### Community 0 - "Community 0"
-Cohesion: 0.31
-Nodes (29): AgentOutput, AgentOutputStatus, AgentRole, AnalysisRunStatus, EventType, Evidence, SnapshotKind, _ActiveMeeting (+21 more)
+Cohesion: 0.22
+Nodes (35): AgentOutput, AgentOutputStatus, AgentRole, CandidateSource, Event, EventType, Evidence, SnapshotKind (+27 more)
 
 ### Community 1 - "Community 1"
 Cohesion: 0.05
@@ -146,8 +140,8 @@ Cohesion: 0.08
 Nodes (46): _atr(), _average_volume(), _EODBar, InsufficientMarketDataError, InvalidTickerError, MarketDataError, normalize_us_ticker(), _optional_float() (+38 more)
 
 ### Community 3 - "Community 3"
-Cohesion: 0.08
-Nodes (19): AwareDatetime, CommitteeBroker, 기존 에이전트 결과를 감사 가능한 투자위원회 회의로 구성한다., 완료된 분석 결과를 고정 순서의 회의 발언으로 불러온다., 사람이 지정한 한 역할만 추가로 호출하고 성공과 실패를 모두 저장한다., 추가 모델 호출 없이 claim ledger와 최종 회의록을 저장한다., 중단 요청을 기록하고 진행 중 발언이 끝난 뒤 부분 회의록을 보존한다., 세션 식별자로 현재 또는 종료된 회의 상태를 조회한다. (+11 more)
+Cohesion: 0.10
+Nodes (15): AwareDatetime, _ActiveMeeting, CommitteeBroker, CommitteeMeetingState, CommitteeMinutes, 기존 에이전트 결과를 감사 가능한 투자위원회 회의로 구성한다., 완료된 분석 결과를 고정 순서의 회의 발언으로 불러온다., 사람이 지정한 한 역할만 추가로 호출하고 성공과 실패를 모두 저장한다. (+7 more)
 
 ### Community 4 - "Community 4"
 Cohesion: 0.11
@@ -166,8 +160,8 @@ Cohesion: 0.12
 Nodes (16): 기존 분석 서비스와 명시적으로 연결되는 호환 속성., 예약 시각이 된 분석을 한 번만 claim할 수 있게 조정한다., 대기 중인 분석 실행을 미래의 KST 시각에 한 번 예약한다., 최신 예약 상태를 예정 시각과 등록 순서 기준으로 반환한다., 예약 ID에 해당하는 최신 영속 상태를 반환한다., 아직 claim되지 않은 예약을 취소한다., 예약 시각이 지난 항목을 FIFO 순서로 원자적으로 claim한다., claim된 예약이 실제 실행 콜백에 전달됐음을 기록한다. (+8 more)
 
 ### Community 8 - "Community 8"
-Cohesion: 0.13
-Nodes (39): DatabaseRuntime, 실행 중인 MariaDB 연결과 저장소를 함께 보관한다., DiscoveryStrategy, EventBroker, 프로세스 내부의 가벼운 fan-out 이벤트 브로커., 현재 연결된 모든 구독자에게 이벤트 복사본을 보낸다., 예약, 분석 실행 또는 후보를 찾지 못했을 때 발생한다., 예약 입력값이 유효하지 않을 때 발생한다. (+31 more)
+Cohesion: 0.14
+Nodes (43): DatabaseRuntime, 실행 중인 MariaDB 연결과 저장소를 함께 보관한다., AnalysisRunStatus, ReviewDecision, DiscoveryStrategy, DecisionArchiveNotFoundError, 요청한 분석 실행 또는 연결 후보가 없을 때 발생한다., EventBroker (+35 more)
 
 ### Community 10 - "Community 10"
 Cohesion: 0.08
@@ -190,8 +184,8 @@ Cohesion: 0.56
 Nodes (8): add_run(), make_service(), test_cancel_and_dispatch_terminal_records_enforce_transitions(), test_claim_due_uses_scheduled_time_then_global_sequence_fifo(), test_concurrent_schedule_requests_create_only_one_active_item(), test_due_schedule_reconciles_run_that_was_completed_before_dispatch(), test_new_service_recovers_persisted_claim_and_reconciles_dispatch(), test_schedule_requires_aware_future_time_and_persists_kst_event()
 
 ### Community 15 - "office.js"
-Cohesion: 0.08
-Nodes (42): verdictLabel(), addTaskButton(), agentForRole(), agentStatus(), ApiRequestError, appendDiscoveryList(), appendMinutesSection(), candidateScore() (+34 more)
+Cohesion: 0.09
+Nodes (43): addTaskButton(), ApiRequestError, appendDiscoveryList(), appendMinutesSection(), candidateScore(), candidateTicker(), committeeClaims(), committeeEntries() (+35 more)
 
 ### Community 18 - "Pixel Investment Office"
 Cohesion: 0.33
@@ -202,8 +196,8 @@ Cohesion: 0.70
 Nodes (4): _existing_app_password(), main(), _random_password(), _workspace()
 
 ### Community 20 - "graphify reference: add a URL and watch a folder"
-Cohesion: 0.19
-Nodes (25): AnalysisWorkflow, AnalysisRun, Candidate, CandidateSource, DomainModel, Event, HumanReview, Snapshot (+17 more)
+Cohesion: 0.10
+Nodes (40): AnalysisWorkflow, AnalysisRun, Candidate, CandidateStatus, DomainModel, HumanReview, Snapshot, DecisionArchiveEntry (+32 more)
 
 ### Community 22 - "graphify reference: incremental update and cluster-only"
 Cohesion: 0.50
@@ -219,67 +213,67 @@ Nodes (3): For --cluster-only, For --update (incremental re-extraction), graphif
 
 ### Community 28 - "AnalysisProvider"
 Cohesion: 0.08
-Nodes (98): activateTab(), ACTIVE_COMMITTEE_STATUSES, ACTIVE_RUN_STATUSES, bindEvents(), elements, handleTabKeydown(), handleTaskAction(), loadMinutes() (+90 more)
+Nodes (99): activateTab(), ACTIVE_COMMITTEE_STATUSES, ACTIVE_RUN_STATUSES, bindEvents(), elements, handleTabKeydown(), handleTaskAction(), loadMinutes() (+91 more)
 
 ### Community 32 - "fillRect"
-Cohesion: 0.27
-Nodes (18): draw(), drawBackground(), drawConferenceTable(), drawDesk(), drawIntake(), drawInteractionMarker(), drawLounge(), drawNpc() (+10 more)
+Cohesion: 0.20
+Nodes (22): collides(), draw(), drawBackground(), drawConferenceTable(), drawDesk(), drawIntake(), drawInteractionMarker(), drawLounge() (+14 more)
 
 ### Community 33 - "setText"
-Cohesion: 0.15
-Nodes (27): announce(), applyProvider(), applyRun(), connectEvents(), interact(), loadInitialState(), openAgent(), openCommittee() (+19 more)
+Cohesion: 0.20
+Nodes (21): announce(), applyProvider(), applyRun(), connectEvents(), loadInitialState(), refreshRun(), renderDecisionDraft(), replaceList() (+13 more)
 
 ### Community 34 - "setFeedback"
-Cohesion: 0.22
-Nodes (27): applyCommittee(), bindUi(), committeeFromPayload(), committeeIdentifier(), committeeIsActive(), committeeStatusLabel(), finishCommittee(), handleScheduleAction() (+19 more)
+Cohesion: 0.21
+Nodes (25): applyCommittee(), committeeFromPayload(), committeeIdentifier(), committeeIsActive(), committeeStatusLabel(), configureScheduleTime(), handleScheduleAction(), handleTaskAction() (+17 more)
 
 ### Community 36 - "interact"
-Cohesion: 0.25
-Nodes (8): bindKeyboard(), bindMobileControls(), closeDialog(), collides(), frame(), movementVector(), nudgePlayer(), updatePlayer()
+Cohesion: 0.19
+Nodes (14): agentForRole(), agentStatus(), bindKeyboard(), bindMobileControls(), closeDialog(), debugState(), interact(), normalizeStatus() (+6 more)
 
 ### Community 37 - "submitDiscoveryAnalysis"
-Cohesion: 0.18
-Nodes (18): discoveryRunFromPayload(), discoveryRunId(), discoveryRunIsTerminal(), discoveryRunsFromPayload(), discoveryRunStatus(), handleDiscoverySelection(), loadStoredDiscoveryRuns(), mergeDiscoveryRuns() (+10 more)
+Cohesion: 0.12
+Nodes (27): bindUi(), decisionsFromPayload(), discoveryRunFromPayload(), discoveryRunId(), discoveryRunIsTerminal(), discoveryRunsFromPayload(), discoveryRunStatus(), finishCommittee() (+19 more)
 
 ### Community 39 - "Settings"
-Cohesion: 0.12
-Nodes (21): 도메인 객체의 기본 시각을 UTC로 생성한다., utc_now(), 수동 업무를 역할별로 한 번에 하나만 실행하고 상태를 스냅샷으로 남긴다., 한 분석 실행의 최신 업무 상태를 대기열 순서로 반환한다., 업무 항목의 최신 저장 상태를 반환한다., 모든 분석 실행에서 업무 ID에 해당하는 최신 저장 상태를 찾는다., 역할의 다음 대기 업무 하나를 실행한다.          같은 분석 실행과 역할에 이미 실행 중인 업무가 있으면 아무것도 시작하지 않고, 실행기에서 실제로 관찰한 진행 데이터만 저장한다. (+13 more)
+Cohesion: 0.16
+Nodes (18): 도메인 객체의 기본 시각을 UTC로 생성한다., utc_now(), Lock, Any, BaseModel, UUID, 수동 업무를 역할별로 한 번에 하나만 실행하고 상태를 스냅샷으로 남긴다., 한 분석 실행의 최신 업무 상태를 대기열 순서로 반환한다. (+10 more)
+
+### Community 40 - "test_scheduled_analysis.py"
+Cohesion: 0.29
+Nodes (10): CommitteeValidationError, 회의 입력이나 제어 명령이 허용 범위를 벗어난 경우., FakeProvider, seed_completed_run(), test_directed_speak_calls_only_selected_role_and_respects_turn_cap(), test_directed_speak_failure_is_preserved_in_output_and_minutes(), test_existing_outputs_form_deterministic_ledger_and_minutes(), test_running_meeting_can_resume_from_snapshot_after_restart() (+2 more)
 
 ### Community 45 - "BaseModel"
-Cohesion: 0.13
-Nodes (27): CandidateStatus, ReviewDecision, AnalysisRunConflictError, RuntimeError, 대기 중이 아닌 분석 실행을 중복 시작하려 할 때 발생한다., blocked_risk(), EventFailingStorage, fake_risk() (+19 more)
+Cohesion: 0.23
+Nodes (14): blocked_risk(), fake_risk(), make_committee(), Any, RiskFunction, test_agent_failure_is_persisted_without_reviewable_decision(), test_analysis_cannot_start_twice(), test_analysis_workflow_metadata_is_stored_and_exposed() (+6 more)
 
 ### Community 46 - "FastAPI"
-Cohesion: 0.15
-Nodes (16): DecisionArchiveEntry, DecisionArchiveNotFoundError, DecisionArchiveService, 실행 식별자로 카드 한 건을 조회한다., 예약 분석 스냅샷에서 의사결정 카드에 필요한 메타데이터., 한 분석 실행과 연결된 과거 의사결정 카드., 요청한 분석 실행 또는 연결 후보가 없을 때 발생한다., 저장된 실행을 변경하지 않고 의사결정 카드 목록과 상세를 제공한다. (+8 more)
+Cohesion: 0.35
+Nodes (10): GateProvider, make_service(), Any, test_cancelled_queue_item_can_resume_as_new_attempt_only(), test_failure_report_and_resume_use_stored_previous_context_for_new_attempt(), test_report_reads_only_persisted_state_without_provider_call(), test_restart_recovery_fails_running_item_and_returns_valid_queue(), test_run_requires_stored_market_snapshot_without_calling_provider() (+2 more)
 
 ### Community 47 - "RiskFunction"
-Cohesion: 0.09
-Nodes (38): BaseSettings, get_settings(), 환경 변수와 로컬 .env 파일에서 읽는 실행 설정., 인증이 없는 로컬 API가 외부 인터페이스에 노출되지 않게 한다., 프로세스에서 동일한 검증 설정 객체를 재사용한다., Settings, create_app(), FastAPI (+30 more)
-
-### Community 53 - "BaseModel"
-Cohesion: 0.19
-Nodes (13): confidenceLabel(), createDecisionArchiveCard(), decisionFromPayload(), decisionIdentifier(), decisionStatusLabel(), decisionView(), loadDecisionDetail(), readableKstTime() (+5 more)
+Cohesion: 0.07
+Nodes (44): BaseSettings, LogCaptureFixture, get_settings(), 환경 변수와 로컬 .env 파일에서 읽는 실행 설정., 인증이 없는 로컬 API가 외부 인터페이스에 노출되지 않게 한다., 프로세스에서 동일한 검증 설정 객체를 재사용한다., Settings, create_app() (+36 more)
 
 ## Knowledge Gaps
 - **62 isolated node(s):** `investment-office`, `elements`, `state`, `elements`, `state` (+57 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **56 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **50 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `CodexProvider` connect `Community 1` to `Community 8`?**
   _High betweenness centrality (0.070) - this node is a cross-community bridge._
-- **Why does `AnalysisProvider` connect `Community 0` to `Community 2`, `Community 3`, `Community 5`, `Settings`, `Community 8`, `Community 12`, `BaseModel`, `RiskFunction`, `graphify reference: add a URL and watch a folder`, `Any`?**
-  _High betweenness centrality (0.058) - this node is a cross-community bridge._
 - **Why does `YahooFinanceClient` connect `Community 2` to `Community 0`, `Community 8`, `Community 12`, `BaseModel`, `RiskFunction`, `Any`?**
-  _High betweenness centrality (0.054) - this node is a cross-community bridge._
+  _High betweenness centrality (0.067) - this node is a cross-community bridge._
+- **Why does `API` connect `AnalysisProvider` to `setText`, `setFeedback`, `Community 4`, `submitDiscoveryAnalysis`, `office.js`?**
+  _High betweenness centrality (0.048) - this node is a cross-community bridge._
 - **Are the 60 inferred relationships involving `Storage` (e.g. with `_ActiveMeeting` and `_ClaimAccumulator`) actually correct?**
   _`Storage` has 60 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 70 inferred relationships involving `Snapshot` (e.g. with `_ActiveMeeting` and `_ClaimAccumulator`) actually correct?**
-  _`Snapshot` has 70 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 67 inferred relationships involving `AnalysisProvider` (e.g. with `_ActiveMeeting` and `_ClaimAccumulator`) actually correct?**
-  _`AnalysisProvider` has 67 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 57 inferred relationships involving `Event` (e.g. with `_ActiveMeeting` and `_ClaimAccumulator`) actually correct?**
-  _`Event` has 57 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 68 inferred relationships involving `AnalysisProvider` (e.g. with `_ActiveMeeting` and `_ClaimAccumulator`) actually correct?**
+  _`AnalysisProvider` has 68 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 71 inferred relationships involving `Snapshot` (e.g. with `_ActiveMeeting` and `_ClaimAccumulator`) actually correct?**
+  _`Snapshot` has 71 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 66 inferred relationships involving `AnalysisRunStatus` (e.g. with `_ActiveMeeting` and `_ClaimAccumulator`) actually correct?**
+  _`AnalysisRunStatus` has 66 INFERRED edges - model-reasoned connections that need verification._

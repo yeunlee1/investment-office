@@ -9,6 +9,7 @@ import pytest
 from investment_office.domain import (
     AgentRole,
     AnalysisRun,
+    AnalysisRunStatus,
     Candidate,
     EventType,
     Snapshot,
@@ -276,3 +277,77 @@ async def test_run_requires_stored_market_snapshot_without_calling_provider() ->
 
     assert provider.calls == []
     assert service.get_work_item(run.id, item.id).status is WorkItemStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_terminal_run_without_market_snapshot_fails_queued_work_item() -> None:
+    provider = GateProvider()
+    service, storage, _, run = make_service(provider, with_market_snapshot=False)
+    await service.create_work_item(
+        run_id=run.id,
+        role=AgentRole.NEWS,
+        title="종료 분석의 실행 불가 업무",
+        instructions="시장 자료가 없으면 실패 상태로 확정한다.",
+    )
+    stored_run = storage.get_analysis_run(run.id)
+    assert stored_run is not None
+    stored_run.status = AnalysisRunStatus.FAILED
+    storage.save_analysis_run(stored_run)
+
+    failed = await service.run_next(run.id, AgentRole.NEWS)
+
+    assert failed is not None
+    assert failed.status is WorkItemStatus.FAILED
+    assert "시장 데이터 스냅샷" in (failed.error or "")
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_restart_recovery_fails_running_item_and_returns_valid_queue() -> None:
+    provider = GateProvider()
+    service, storage, broker, run = make_service(provider)
+    running_item = await service.create_work_item(
+        run_id=run.id,
+        role=AgentRole.FUNDAMENTAL,
+        title="재시작 전 실행 업무",
+        instructions="재시작 시 실패로 복구한다.",
+    )
+    queued_item = await service.create_work_item(
+        run_id=run.id,
+        role=AgentRole.NEWS,
+        title="재시작 뒤 대기 업무",
+        instructions="유효한 대기열로 돌려준다.",
+    )
+    interrupted = running_item.model_copy(
+        update={
+            "status": WorkItemStatus.RUNNING,
+            "version": running_item.version + 1,
+            "started_at": running_item.updated_at,
+            "updated_at": running_item.updated_at,
+        }
+    )
+    storage.save_snapshot(
+        Snapshot(
+            candidate_id=interrupted.candidate_id,
+            analysis_run_id=interrupted.analysis_run_id,
+            kind=SnapshotKind.AGENT_STATE,
+            data={
+                "record_type": "manual_work_item",
+                "schema_version": 1,
+                "work_item": interrupted.model_dump(mode="json"),
+            },
+        )
+    )
+    restarted = WorkItemService(
+        storage=storage,
+        provider=cast(AnalysisProvider, provider),
+        broker=broker,
+    )
+
+    queued = await restarted.recover()
+
+    recovered = restarted.get_work_item(run.id, running_item.id)
+    assert recovered.status is WorkItemStatus.FAILED
+    assert "서버 재시작" in (recovered.error or "")
+    assert [item.id for item in queued] == [queued_item.id]
+    assert provider.calls == []

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -72,6 +73,22 @@ from investment_office.storage import Storage
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=PACKAGE_ROOT / "templates")
+logger = logging.getLogger(__name__)
+
+
+def _log_background_task_failure(completed: asyncio.Task[Any]) -> None:
+    """회수된 백그라운드 태스크의 예상 밖 예외를 서버 로그에 남긴다."""
+
+    if completed.cancelled():
+        return
+    failure = completed.exception()
+    if failure is None:
+        return
+    logger.error(
+        "백그라운드 태스크가 예상 밖 예외로 종료되었습니다. 태스크=%s",
+        completed.get_name(),
+        exc_info=(type(failure), failure, failure.__traceback__),
+    )
 
 
 class AnalyzeRequest(BaseModel):
@@ -287,6 +304,14 @@ def create_app(
         try:
             await cast(InvestmentCommittee, app.state.committee).recover_interrupted_runs()
             await cast(ScheduledAnalysisService, app.state.scheduled_analyses).recover()
+            queued_work_items = await cast(WorkItemService, app.state.work_items).recover()
+            for item in queued_work_items:
+                schedule_work_items_for_app(
+                    app,
+                    cast(WorkItemService, app.state.work_items),
+                    item.analysis_run_id,
+                    item.role,
+                )
             scheduler_task = asyncio.create_task(
                 schedule_poll_loop(app),
                 name="scheduled-analysis-poller",
@@ -426,18 +451,15 @@ def create_app(
 
         def consume_result(completed: asyncio.Task[None]) -> None:
             tasks.discard(completed)
-            if completed.cancelled():
-                return
-            with suppress(Exception):
-                completed.exception()
+            _log_background_task_failure(completed)
 
         task.add_done_callback(consume_result)
 
     def track_background_task(request: Request, task: asyncio.Task[None]) -> None:
         track_app_task(request.app, task)
 
-    def schedule_work_items(
-        request: Request,
+    def schedule_work_items_for_app(
+        app: FastAPI,
         service: WorkItemService,
         run_id: UUID,
         role: AgentRole,
@@ -446,7 +468,15 @@ def create_app(
             drain_work_items(service, run_id, role),
             name=f"manual-work-{run_id}-{role.value}",
         )
-        track_background_task(request, task)
+        track_app_task(app, task)
+
+    def schedule_work_items(
+        request: Request,
+        service: WorkItemService,
+        run_id: UUID,
+        role: AgentRole,
+    ) -> None:
+        schedule_work_items_for_app(request.app, service, run_id, role)
 
     async def dispatch_scheduled_analysis(
         app: FastAPI,

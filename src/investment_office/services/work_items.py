@@ -20,6 +20,7 @@ from pydantic import (
 from investment_office.domain import (
     AgentRole,
     AnalysisRun,
+    AnalysisRunStatus,
     Candidate,
     Event,
     EventType,
@@ -237,6 +238,21 @@ class WorkItemService:
                 kind=SnapshotKind.MARKET_DATA,
             )
             if not market_snapshots:
+                if run.status not in {
+                    AnalysisRunStatus.QUEUED,
+                    AnalysisRunStatus.RUNNING,
+                }:
+                    failed = self._transition(
+                        item,
+                        status=WorkItemStatus.FAILED,
+                        error="종료된 분석에 시장 데이터 스냅샷이 없어 업무를 실행할 수 없습니다.",
+                        completed_at=utc_now(),
+                    )
+                    await self._persist(
+                        failed,
+                        "시장 데이터가 없는 종료 분석의 수동 업무를 실패로 확정했습니다.",
+                    )
+                    return failed
                 raise WorkItemTransitionError(
                     "수동 업무 실행에 필요한 시장 데이터 스냅샷이 없습니다."
                 )
@@ -412,6 +428,57 @@ class WorkItemService:
             completed_at=item.completed_at,
             resume_semantics=(RESUME_SEMANTICS if item.attempt > 1 else None),
         )
+
+    async def recover(self) -> list[WorkItem]:
+        """재시작으로 끊긴 실행을 실패 처리하고 실행 가능한 대기 업무를 반환한다."""
+
+        queued: list[WorkItem] = []
+        for run in self.storage.list_analysis_runs():
+            for item in self._latest_items(run.id):
+                if item.status not in {WorkItemStatus.RUNNING, WorkItemStatus.QUEUED}:
+                    continue
+                lock = self._lock_for(run.id, item.role)
+                async with lock:
+                    current = self.get_work_item(run.id, item.id)
+                    if current.status is WorkItemStatus.RUNNING:
+                        failed = self._transition(
+                            current,
+                            status=WorkItemStatus.FAILED,
+                            error=(
+                                "서버 재시작으로 실행 중이던 수동 업무가 중단되었습니다. "
+                                "저장된 상태를 확인한 뒤 재개하세요."
+                            ),
+                            completed_at=utc_now(),
+                        )
+                        await self._persist(
+                            failed,
+                            "재시작 복구 중 실행 중이던 수동 업무를 실패로 확정했습니다.",
+                        )
+                        continue
+                    market_snapshots = self.storage.list_snapshots(
+                        run.id,
+                        kind=SnapshotKind.MARKET_DATA,
+                    )
+                    if not market_snapshots and run.status not in {
+                        AnalysisRunStatus.QUEUED,
+                        AnalysisRunStatus.RUNNING,
+                    }:
+                        failed = self._transition(
+                            current,
+                            status=WorkItemStatus.FAILED,
+                            error=(
+                                "종료된 분석에 시장 데이터 스냅샷이 없어 "
+                                "대기 업무를 복구할 수 없습니다."
+                            ),
+                            completed_at=utc_now(),
+                        )
+                        await self._persist(
+                            failed,
+                            "재시작 복구 중 실행 불가능한 대기 업무를 실패로 확정했습니다.",
+                        )
+                        continue
+                    queued.append(current)
+        return queued
 
     async def _finish_cancelled_execution(
         self,

@@ -77,11 +77,6 @@
   "84": "RuntimeError",
   "85": "StrEnum",
   "86": "UUID",
-  "87": "Any",
-  "88": "BaseModel",
-  "89": "RuntimeError",
-  "90": "StrEnum",
-  "91": "UUID",
   "92": "Any",
   "93": "JsonValue",
   "94": "Protocol",
@@ -93,6 +88,5 @@
   "106": "datetime",
   "107": "Any",
   "108": "AsyncClient",
-  "112": "BaseModel",
-  "113": "Any"
+  "112": "BaseModel"
 }

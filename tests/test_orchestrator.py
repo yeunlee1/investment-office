@@ -32,6 +32,7 @@ from investment_office.services.orchestrator import (
     DISCOVERY_ANALYSIS_THESIS,
     AnalysisProvider,
     AnalysisRunConflictError,
+    ConcurrencyLimitedAnalysisProvider,
     InvestmentCommittee,
     ResearchDataClient,
     RiskFunction,
@@ -77,6 +78,27 @@ class FakeMarketData:
         if self.error is not None:
             raise self.error
         return FakeSnapshot(ticker=ticker)
+
+
+class BlockingMarketData(FakeMarketData):
+    def __init__(self, expected_parallel: int) -> None:
+        super().__init__()
+        self.expected_parallel = expected_parallel
+        self.active = 0
+        self.max_active = 0
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def fetch_eod_snapshot(self, ticker: str) -> FakeSnapshot:
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        if self.active >= self.expected_parallel:
+            self.started.set()
+        try:
+            await self.release.wait()
+            return await super().fetch_eod_snapshot(ticker)
+        finally:
+            self.active -= 1
 
 
 class FakeResearchData:
@@ -188,6 +210,20 @@ class FakeProvider:
         if role == self.fail_role:
             raise RuntimeError(f"{role} 분석 실패")
         stance = "bullish" if role in {"bull", "head_trader"} else "neutral"
+        bundle = snapshot.get("research_bundle")
+        facts = bundle.get("facts", []) if isinstance(bundle, dict) else []
+        evidence = (
+            [
+                {
+                    "fact_id": facts[0]["fact_id"],
+                    "claim": "모델이 임의로 만든 근거 문장",
+                    "source_url": "https://attacker.invalid/forged",
+                    "published_at": "2099-01-01T00:00:00Z",
+                }
+            ]
+            if facts
+            else []
+        )
         return {
             "role": role,
             "ticker": ticker,
@@ -195,19 +231,39 @@ class FakeProvider:
             "confidence": 0.76,
             "summary": f"{role} 역할의 검증 가능한 요약",
             "key_points": ["입력 스냅샷만 사용했다."],
-            "evidence": [
-                {
-                    "claim": "입력 스냅샷의 종가를 확인했다.",
-                    "fact_id": "price:test:close",
-                    "source_url": snapshot["source_url"],
-                    "published_at": None,
-                }
-            ],
+            "evidence": evidence,
             "risks": ["제공된 데이터 범위가 제한적이다."],
             "recommendation": "사람의 최종 확인 후 조건부로 판단한다.",
             "data_gaps": [],
             "invalidations": ["입력 가격 조건이 바뀌면 재검토한다."],
         }
+
+
+class BlockingProvider(FakeProvider):
+    def __init__(self, expected_parallel: int) -> None:
+        super().__init__()
+        self.expected_parallel = expected_parallel
+        self.active = 0
+        self.max_active = 0
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def analyze(
+        self,
+        role: str,
+        ticker: str,
+        snapshot: dict[str, Any],
+        context: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        if self.active >= self.expected_parallel:
+            self.started.set()
+        try:
+            await self.release.wait()
+            return await super().analyze(role, ticker, snapshot, context)
+        finally:
+            self.active -= 1
 
 
 def fake_risk(snapshot: FakeSnapshot, chairman: dict[str, Any]) -> FakeRiskResult:
@@ -259,6 +315,7 @@ def make_committee(
     storage: InMemoryStorage | None = None,
     risk_function: RiskFunction | None = None,
     research_data: FakeResearchData | None = None,
+    max_parallel_agents: int = 3,
 ) -> tuple[InvestmentCommittee, InMemoryStorage, FakeProvider, FakeMarketData]:
     resolved_storage = storage or InMemoryStorage()
     resolved_provider = provider or FakeProvider()
@@ -268,11 +325,54 @@ def make_committee(
         provider=cast(AnalysisProvider, resolved_provider),
         market_data=cast(YahooFinanceClient, resolved_market),
         broker=EventBroker(),
-        max_parallel_agents=3,
+        max_parallel_agents=max_parallel_agents,
         risk_function=risk_function or cast(RiskFunction, fake_risk),
         research_data=cast(ResearchDataClient, research_data) if research_data else None,
     )
     return committee, resolved_storage, resolved_provider, resolved_market
+
+
+@pytest.mark.asyncio
+async def test_model_provider_wrapper_enforces_shared_parallel_limit() -> None:
+    provider = BlockingProvider(expected_parallel=2)
+    limited = ConcurrencyLimitedAnalysisProvider(provider, asyncio.Semaphore(2))
+    calls = [
+        asyncio.create_task(
+            limited.analyze(
+                "technical",
+                f"T{index}",
+                {"source_url": "https://example.com/market"},
+                [],
+            )
+        )
+        for index in range(5)
+    ]
+
+    await asyncio.wait_for(provider.started.wait(), timeout=1)
+    await asyncio.sleep(0.02)
+
+    assert provider.max_active == 2
+    provider.release.set()
+    await asyncio.wait_for(asyncio.gather(*calls), timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_analysis_run_limit_caps_parallel_price_and_research_entry() -> None:
+    market = BlockingMarketData(expected_parallel=2)
+    committee, _, _, _ = make_committee(
+        market_data=market,
+        max_parallel_agents=2,
+    )
+    runs = [await committee.create_analysis(f"T{index}") for index in range(5)]
+    tasks = [asyncio.create_task(committee.run_analysis(run.id)) for run in runs]
+
+    await asyncio.wait_for(market.started.wait(), timeout=1)
+    await asyncio.sleep(0.02)
+
+    assert market.max_active == 2
+    market.release.set()
+    await asyncio.wait_for(asyncio.gather(*tasks), timeout=3)
+    assert len(market.requested_tickers) == len(runs)
 
 
 @pytest.mark.asyncio
@@ -396,7 +496,7 @@ async def test_six_agent_analysis_then_human_review_state(
         AgentRole.RISK_MANAGER,
     }
     outputs_by_role = {output.role: output for output in outputs}
-    assert outputs_by_role[AgentRole.TECHNICAL].evidence[0].fact_id == "price:test:close"
+    assert outputs_by_role[AgentRole.TECHNICAL].evidence == []
     for role in (AgentRole.FUNDAMENTAL, AgentRole.NEWS):
         output = outputs_by_role[role]
         assert output.confidence == 0.0
@@ -445,6 +545,17 @@ async def test_research_bundle_runs_all_roles_and_applies_regime_cap() -> None:
     }
     market_snapshot = storage.list_snapshots(run.id, kind=SnapshotKind.MARKET_DATA)[0]
     assert market_snapshot.data["research_quality"]["analysis_eligible"] is True
+    outputs = storage.list_agent_outputs(run.id)
+    model_outputs = [output for output in outputs if output.role is not AgentRole.RISK_MANAGER]
+    assert model_outputs
+    for output in model_outputs:
+        assert output.evidence[0].fact_id == "test:fundamental:revenue"
+        assert output.evidence[0].title == "매출=100.0 currency"
+        assert str(output.evidence[0].url) == (
+            "https://query1.finance.yahoo.com/v8/finance/chart/AAPL"
+        )
+        assert "임의로 만든" not in output.data["evidence"][0]["claim"]
+        assert "attacker.invalid" not in output.data["evidence"][0]["source_url"]
     decision = committee.build_run_payload(run.id)["decision"]
     assert decision["risk_eligible"] is True
     assert decision["position_cap_pct"] == 2.0

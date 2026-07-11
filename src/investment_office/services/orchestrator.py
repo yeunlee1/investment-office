@@ -27,12 +27,14 @@ from investment_office.domain import (
     SnapshotKind,
     utc_now,
 )
+from investment_office.services.codex_provider import reconstruct_evidence
 from investment_office.services.event_broker import EventBroker
 from investment_office.services.instrument_identity import (
     InstrumentIdentity,
     normalize_instrument,
     resolve_stored_instrument,
 )
+from investment_office.services.macro_context import MacroContextResult
 from investment_office.services.market_data import EODSnapshot
 from investment_office.services.research_contracts import InstrumentRef, MarketId
 from investment_office.services.research_pipeline import ResearchPipelineResult
@@ -72,6 +74,81 @@ class ResearchDataClient(Protocol):
     ) -> ResearchPipelineResult: ...
 
 
+class _MacroContextDataClient(Protocol):
+    async def get_macro_context(
+        self,
+        market: MarketId | None = None,
+    ) -> MacroContextResult: ...
+
+
+class ConcurrencyLimitedAnalysisProvider:
+    """여러 실행 경로가 공유하는 모델 호출 동시성 한도를 적용한다."""
+
+    def __init__(
+        self,
+        provider: AnalysisProvider,
+        semaphore: asyncio.Semaphore,
+    ) -> None:
+        self.provider = provider
+        self.semaphore = semaphore
+
+    async def analyze(
+        self,
+        role: str,
+        ticker: str,
+        snapshot: dict[str, Any],
+        context: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        async with self.semaphore:
+            return await self.provider.analyze(role, ticker, snapshot, context)
+
+
+class ConcurrencyLimitedEODMarketDataClient:
+    """분석과 후보 탐색이 공유하는 가격 수집 동시성 한도를 적용한다."""
+
+    def __init__(
+        self,
+        client: EODMarketDataClient,
+        semaphore: asyncio.Semaphore,
+    ) -> None:
+        self.client = client
+        self.semaphore = semaphore
+
+    async def fetch_eod_snapshot(self, ticker: str) -> EODSnapshot:
+        async with self.semaphore:
+            return await self.client.fetch_eod_snapshot(ticker)
+
+
+class ConcurrencyLimitedResearchDataClient:
+    """가격 수집과 같은 앱 전역 한도에서 회사 연구 수집을 실행한다."""
+
+    def __init__(
+        self,
+        client: ResearchDataClient,
+        semaphore: asyncio.Semaphore,
+    ) -> None:
+        self.client = client
+        self.semaphore = semaphore
+
+    async def collect(
+        self,
+        instrument: InstrumentRef,
+        snapshot: EODSnapshot,
+    ) -> ResearchPipelineResult:
+        async with self.semaphore:
+            return await self.client.collect(instrument, snapshot)
+
+    async def get_macro_context(
+        self,
+        market: MarketId | None = None,
+    ) -> MacroContextResult:
+        """시장 개요 조회도 같은 자료 수집 한도 안에서 실행한다."""
+
+        macro_client = cast(_MacroContextDataClient, self.client)
+        async with self.semaphore:
+            return await macro_client.get_macro_context(market)
+
+
 RiskFunction = Callable[[EODSnapshot, dict[str, Any]], RiskAssessment]
 
 
@@ -92,12 +169,19 @@ class InvestmentCommittee:
         max_parallel_agents: int = 3,
         risk_function: RiskFunction = assess_risk,
         research_data: ResearchDataClient | None = None,
+        provider_semaphore: asyncio.Semaphore | None = None,
+        run_semaphore: asyncio.Semaphore | None = None,
     ) -> None:
+        if isinstance(max_parallel_agents, bool) or max_parallel_agents < 1:
+            raise ValueError("max_parallel_agents는 1 이상이어야 합니다.")
         self.storage = storage
-        self.provider = provider
+        self.provider = ConcurrencyLimitedAnalysisProvider(
+            provider,
+            provider_semaphore or asyncio.Semaphore(max_parallel_agents),
+        )
         self.market_data = market_data
         self.broker = broker
-        self._semaphore = asyncio.Semaphore(max_parallel_agents)
+        self._run_semaphore = run_semaphore or asyncio.Semaphore(max_parallel_agents)
         self._risk_function = risk_function
         self.research_data = research_data
 
@@ -211,6 +295,12 @@ class InvestmentCommittee:
 
     async def run_analysis(self, run_id: UUID) -> None:
         """한 분석 실행을 완료하거나 실패 상태로 확정한다."""
+
+        async with self._run_semaphore:
+            await self._run_analysis_once(run_id)
+
+    async def _run_analysis_once(self, run_id: UUID) -> None:
+        """앱 전역 실행 슬롯을 확보한 분석 한 건을 처리한다."""
 
         run = self._require_run(run_id)
         if run.status is not AnalysisRunStatus.QUEUED:
@@ -611,20 +701,27 @@ class InvestmentCommittee:
             if self._role_input_is_missing(role, snapshot):
                 result = self._data_gap_result(role, instrument.symbol)
             else:
-                async with self._semaphore:
-                    result = await self.provider.analyze(
-                        role.value, instrument.symbol, snapshot, context
-                    )
-            validated = JSON_DICT_ADAPTER.validate_python(result)
-            evidence = [
-                Evidence(
-                    title=str(item.get("claim", "근거")),
-                    fact_id=item.get("fact_id"),
-                    url=item.get("source_url"),
-                    published_at=item.get("published_at"),
+                result = await self.provider.analyze(
+                    role.value, instrument.symbol, snapshot, context
                 )
-                for item in result.get("evidence", [])
-                if isinstance(item, dict)
+            validated = JSON_DICT_ADAPTER.validate_python(result)
+            grounded_evidence = reconstruct_evidence(
+                snapshot,
+                validated.get("evidence", []),
+            )
+            validated["evidence"] = JSON_DICT_ADAPTER.validate_python(
+                {"evidence": grounded_evidence}
+            )["evidence"]
+            evidence = [
+                Evidence.model_validate(
+                    {
+                        "title": item["claim"],
+                        "fact_id": item["fact_id"],
+                        "url": item["source_url"],
+                        "published_at": item["published_at"],
+                    }
+                )
+                for item in grounded_evidence
             ]
             output.status = AgentOutputStatus.COMPLETED
             output.content = str(result.get("summary", ""))

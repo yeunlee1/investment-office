@@ -25,10 +25,11 @@ from investment_office.domain import (
     Snapshot,
     SnapshotKind,
 )
-from investment_office.main import _log_background_task_failure, create_app
+from investment_office.main import _log_background_task_failure, _probe_codex, create_app
 from investment_office.services.market_data import YahooFinanceClient
 from investment_office.services.market_overview import MarketOverviewService
 from investment_office.services.orchestrator import AnalysisProvider, RiskFunction
+from investment_office.services.research_pipeline import ResearchPipeline
 from investment_office.storage import InMemoryStorage
 
 
@@ -91,7 +92,7 @@ class FakeOverviewResult(BaseModel):
             "position_cap_multiplier": 0.25,
             "warnings": [],
             "data_quality": {
-                "analysis_eligible": False,
+                "macro_eligible": False,
                 "blocking_reasons": ["고정 시험 자료입니다."],
                 "warnings": [],
                 "stale_fact_ids": [],
@@ -157,13 +158,7 @@ class FakeProvider:
             "confidence": 0.72,
             "summary": f"{role} 분석 요약",
             "key_points": ["주어진 스냅샷을 확인했다."],
-            "evidence": [
-                {
-                    "claim": "시장 데이터 입력을 사용했다.",
-                    "source_url": snapshot["source_url"],
-                    "published_at": None,
-                }
-            ],
+            "evidence": [],
             "risks": ["데이터 범위가 제한적이다."],
             "recommendation": "사람 검토 전에는 주문하지 않는다.",
             "data_gaps": [],
@@ -188,9 +183,56 @@ def make_app(*, storage: InMemoryStorage | None = None) -> tuple[FastAPI, FakeMa
             MarketOverviewService,
             FakeMarketOverviewService(),
         ),
+        research_data=None,
         risk_function=cast(RiskFunction, fake_risk),
     )
     return app, market
+
+
+@pytest.mark.asyncio
+async def test_injected_provider_keeps_default_research_with_explicit_disable_boundary() -> None:
+    settings = Settings(
+        database_url="mariadb+pymysql://unused:unused@127.0.0.1:3307/unused"
+    )
+    default_market = FakeMarketData()
+    default_app = create_app(
+        settings=settings,
+        storage=InMemoryStorage(),
+        provider=cast(AnalysisProvider, FakeProvider()),
+        market_data=cast(YahooFinanceClient, default_market),
+        risk_function=cast(RiskFunction, fake_risk),
+    )
+
+    async with default_app.router.lifespan_context(default_app):
+        assert isinstance(default_app.state.research_pipeline, ResearchPipeline)
+        assert isinstance(default_app.state.market_overview, MarketOverviewService)
+        assert default_app.state.work_items.provider is default_app.state.committee.provider
+        assert (
+            default_app.state.committee_broker.provider
+            is default_app.state.committee.provider
+        )
+        assert (
+            default_app.state.candidate_discovery.market_data
+            is default_app.state.committee.market_data
+        )
+        assert (
+            default_app.state.market_overview.pipeline
+            is default_app.state.committee.research_data
+        )
+
+    disabled_market = FakeMarketData()
+    disabled_app = create_app(
+        settings=settings,
+        storage=InMemoryStorage(),
+        provider=cast(AnalysisProvider, FakeProvider()),
+        market_data=cast(YahooFinanceClient, disabled_market),
+        research_data=None,
+        risk_function=cast(RiskFunction, fake_risk),
+    )
+
+    async with disabled_app.router.lifespan_context(disabled_app):
+        assert disabled_app.state.research_pipeline is None
+        assert disabled_app.state.market_overview is None
 
 
 async def wait_for_status(
@@ -221,6 +263,36 @@ async def test_background_task_failure_is_logged(caplog: pytest.LogCaptureFixtur
 
     assert "백그라운드-검증" in caplog.text
     assert "백그라운드 검증 실패" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_codex_probe_passes_only_allowlisted_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_options: dict[str, Any] = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"Logged in", b""
+
+    async def fake_spawn(*args: object, **options: Any) -> FakeProcess:
+        del args
+        captured_options.update(options)
+        return FakeProcess()
+
+    monkeypatch.setenv("PATH", "C:\\safe-bin")
+    monkeypatch.setenv("INVESTMENT_OFFICE_DATABASE_PASSWORD", "sensitive")
+    monkeypatch.setattr("investment_office.main.shutil.which", lambda command: command)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+
+    result = await _probe_codex("codex")
+
+    assert result["status"] == "ready"
+    child_environment = cast(dict[str, str], captured_options["env"])
+    assert child_environment["PATH"] == "C:\\safe-bin"
+    assert "INVESTMENT_OFFICE_DATABASE_PASSWORD" not in child_environment
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.0.10", "::1"])
@@ -261,6 +333,23 @@ async def test_local_api_rejects_untrusted_hosts_and_cross_origin_mutations() ->
 
             runs = await client.get("/api/runs")
             assert runs.json()["summary"]["total"] == 0
+            expected_headers = {
+                "content-security-policy": "frame-ancestors 'none'",
+                "x-frame-options": "DENY",
+                "x-content-type-options": "nosniff",
+                "referrer-policy": "no-referrer",
+            }
+            assert {
+                name: runs.headers.get(name) for name in expected_headers
+            } == expected_headers
+            assert {
+                name: cross_origin.headers.get(name) for name in expected_headers
+            } == expected_headers
+            page = await client.get("/")
+            assert page.status_code == 200
+            assert {
+                name: page.headers.get(name) for name in expected_headers
+            } == expected_headers
 
             same_origin = await client.post(
                 "/api/analyze",

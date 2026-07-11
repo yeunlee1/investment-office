@@ -39,7 +39,10 @@ from investment_office.services.candidate_discovery import (
     CandidateDiscoveryService,
     DiscoveryStrategy,
 )
-from investment_office.services.codex_provider import CodexProvider
+from investment_office.services.codex_provider import (
+    CodexProvider,
+    build_codex_child_environment,
+)
 from investment_office.services.committee_broker import (
     CommitteeBroker,
     CommitteeConflictError,
@@ -57,13 +60,15 @@ from investment_office.services.instrument_identity import (
     normalize_instrument,
     resolve_stored_instrument,
 )
-from investment_office.services.macro_context import FredMacroContextClient
+from investment_office.services.macro_context import OfficialMacroContextClient
 from investment_office.services.market_data import YahooFinanceClient
 from investment_office.services.market_overview import MarketOverviewService
 from investment_office.services.orchestrator import (
     DISCOVERY_ANALYSIS_THESIS,
     AnalysisProvider,
     AnalysisRunConflictError,
+    ConcurrencyLimitedEODMarketDataClient,
+    ConcurrencyLimitedResearchDataClient,
     EODMarketDataClient,
     InvestmentCommittee,
     ResearchDataClient,
@@ -98,6 +103,13 @@ from investment_office.storage import Storage
 PACKAGE_ROOT = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=PACKAGE_ROOT / "templates")
 logger = logging.getLogger(__name__)
+
+
+class _DefaultResearchDataMarker:
+    """연구 수집기의 기본 생성과 명시적 비활성화를 구분하는 표식."""
+
+
+_DEFAULT_RESEARCH_DATA = _DefaultResearchDataMarker()
 
 
 def _log_background_task_failure(completed: asyncio.Task[Any]) -> None:
@@ -220,6 +232,7 @@ async def _probe_codex(command: str) -> dict[str, str]:
             "mode": "ChatGPT subscription",
         }
     options: dict[str, Any] = {
+        "env": build_codex_child_environment(),
         "stdout": asyncio.subprocess.PIPE,
         "stderr": asyncio.subprocess.PIPE,
     }
@@ -255,7 +268,9 @@ def create_app(
     storage: Storage | None = None,
     provider: AnalysisProvider | None = None,
     market_data: EODMarketDataClient | None = None,
-    research_data: ResearchDataClient | None = None,
+    research_data: ResearchDataClient | None | _DefaultResearchDataMarker = (
+        _DEFAULT_RESEARCH_DATA
+    ),
     market_overview_service: MarketOverviewService | None = None,
     risk_function: RiskFunction = assess_risk,
 ) -> FastAPI:
@@ -282,10 +297,10 @@ def create_app(
             korea_service_key=resolved_settings.data_go_kr_service_key,
             timeout_seconds=resolved_settings.market_data_timeout_seconds,
         )
-        resolved_research = research_data
-        if resolved_research is None and provider is None and market_data is None:
+        resolved_research: ResearchDataClient | None
+        if isinstance(research_data, _DefaultResearchDataMarker):
             resolved_research = ResearchPipeline(
-                macro_client=FredMacroContextClient(
+                macro_client=OfficialMacroContextClient(
                     timeout_seconds=resolved_settings.market_data_timeout_seconds
                 ),
                 company_client=OfficialCompanyResearchClient(
@@ -295,35 +310,59 @@ def create_app(
                 ),
                 ecos_api_key=resolved_settings.bok_ecos_api_key,
             )
+        else:
+            resolved_research = research_data
         broker = EventBroker()
+        provider_semaphore = asyncio.Semaphore(resolved_settings.max_parallel_agents)
+        run_semaphore = asyncio.Semaphore(resolved_settings.max_parallel_agents)
+        data_collection_semaphore = asyncio.Semaphore(
+            resolved_settings.max_parallel_agents
+        )
+        limited_market_data = ConcurrencyLimitedEODMarketDataClient(
+            resolved_market_data,
+            data_collection_semaphore,
+        )
+        limited_research_data = (
+            ConcurrencyLimitedResearchDataClient(
+                resolved_research,
+                data_collection_semaphore,
+            )
+            if resolved_research is not None
+            else None
+        )
         resolved_market_overview = market_overview_service
-        if resolved_market_overview is None and isinstance(
-            resolved_research, ResearchPipeline
+        if (
+            resolved_market_overview is None
+            and isinstance(resolved_research, ResearchPipeline)
+            and limited_research_data is not None
         ):
-            resolved_market_overview = MarketOverviewService(resolved_research)
-        app.state.committee = InvestmentCommittee(
+            resolved_market_overview = MarketOverviewService(limited_research_data)
+        committee_service = InvestmentCommittee(
             storage=resolved_storage,
             provider=resolved_provider,
-            market_data=resolved_market_data,
+            market_data=limited_market_data,
             broker=broker,
             max_parallel_agents=resolved_settings.max_parallel_agents,
             risk_function=risk_function,
-            research_data=resolved_research,
+            research_data=limited_research_data,
+            provider_semaphore=provider_semaphore,
+            run_semaphore=run_semaphore,
         )
+        app.state.committee = committee_service
         app.state.research_pipeline = resolved_research
         app.state.market_overview = resolved_market_overview
         app.state.work_items = WorkItemService(
             storage=resolved_storage,
-            provider=resolved_provider,
+            provider=committee_service.provider,
             broker=broker,
         )
         app.state.committee_broker = CommitteeBroker(
             storage=resolved_storage,
-            provider=resolved_provider,
+            provider=committee_service.provider,
             event_broker=broker,
         )
         app.state.candidate_discovery = CandidateDiscoveryService(
-            market_data=resolved_market_data,
+            market_data=limited_market_data,
             max_concurrency=max(1, resolved_settings.max_parallel_agents),
         )
         app.state.decision_archive = DecisionArchiveService(storage=resolved_storage)
@@ -446,6 +485,20 @@ def create_app(
                     content={"detail": "교차 사이트 변경 요청이 차단되었습니다."},
                 )
         return await call_next(request)
+
+    @app.middleware("http")
+    async def add_browser_security_headers(
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        """모든 로컬 화면과 API 응답에 최소 브라우저 방어 헤더를 적용한다."""
+
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
 
     app.mount("/static", StaticFiles(directory=PACKAGE_ROOT / "static"), name="static")
 

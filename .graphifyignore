@@ -1,0 +1,6 @@
+var/
+.env
+.venv/
+.codegraph/
+dist/
+graphify-out/

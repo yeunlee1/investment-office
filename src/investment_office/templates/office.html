@@ -1,0 +1,636 @@
+<!-- 실제 2D 투자 사무실 게임 화면의 시맨틱 셸 -->
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta
+      name="description"
+      content="투자 분석 에이전트를 직접 찾아가 업무를 맡기고 위원회 결정을 검토하는 2D 픽셀 사무실"
+    />
+    <meta name="theme-color" content="#090c0a" />
+    <title>Signal Foundry · 2D 투자 사무실</title>
+    <link rel="stylesheet" href="/static/office.css?v=7" />
+    <script src="/static/office.js?v=8" defer></script>
+  </head>
+  <body class="game-page">
+    <a class="skip-link" href="#office-canvas">게임 화면으로 바로가기</a>
+
+    <main id="game-shell" class="game-shell" aria-labelledby="game-title">
+      <h1 id="game-title" class="sr-only">Signal Foundry 2D 투자 사무실</h1>
+
+      <canvas
+        id="office-canvas"
+        width="1440"
+        height="900"
+        tabindex="0"
+        role="application"
+        aria-label="키보드나 화면 조작 버튼으로 이동하는 2D 투자 사무실"
+        aria-describedby="control-guide hud-prompt"
+      >
+        이 브라우저는 게임 화면에 필요한 Canvas를 지원하지 않습니다. 대시보드로 돌아가 분석을 진행해 주세요.
+      </canvas>
+
+      <div class="screen-texture" aria-hidden="true"></div>
+
+      <header class="game-hud" aria-label="분석 운용 현황">
+        <a class="dashboard-link" href="/" aria-label="기존 투자위원회 대시보드로 돌아가기">
+          <span class="dashboard-link__arrow" aria-hidden="true">←</span>
+          <span class="dashboard-link__mark" aria-hidden="true">SF</span>
+          <span class="dashboard-link__copy">
+            <strong>SIGNAL FOUNDRY</strong>
+            <small>대시보드 복귀</small>
+          </span>
+        </a>
+
+        <dl class="hud-telemetry">
+          <div class="hud-cell hud-cell--status">
+            <dt>RUN</dt>
+            <dd id="hud-run-status" class="hud-value is-idle">
+              <span class="hud-lamp" aria-hidden="true"></span>
+              대기
+            </dd>
+          </div>
+          <div class="hud-cell">
+            <dt>TICKER</dt>
+            <dd id="hud-ticker" class="hud-value hud-value--ticker">—</dd>
+          </div>
+          <div class="hud-cell hud-cell--progress">
+            <dt>PROGRESS</dt>
+            <dd id="hud-progress" class="hud-value" aria-live="polite">0 / 6</dd>
+          </div>
+          <div class="hud-cell hud-cell--provider">
+            <dt>PROVIDER</dt>
+            <dd id="hud-provider" class="hud-value">확인 중</dd>
+          </div>
+          <div class="hud-cell hud-cell--zone">
+            <dt>ZONE</dt>
+            <dd id="hud-zone" class="hud-value">로비</dd>
+          </div>
+        </dl>
+      </header>
+
+      <aside id="control-guide" class="control-guide" aria-label="게임 조작 안내">
+        <p class="control-guide__label">CONTROL DECK</p>
+        <div class="control-guide__row">
+          <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 이동</span>
+          <span><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd> 이동</span>
+          <span><kbd>E</kbd> 상호작용</span>
+          <span><kbd>Esc</kbd> 닫기</span>
+        </div>
+      </aside>
+
+      <p id="hud-prompt" class="hud-prompt" aria-live="polite" aria-atomic="true">
+        접수 데스크로 이동해 첫 분석을 시작하세요.
+      </p>
+
+      <nav class="mobile-controls" aria-label="화면 이동 조작">
+        <div class="direction-pad" aria-label="이동 방향">
+          <button class="control-button control-button--up" type="button" data-control="up" aria-label="위로 이동">
+            <span aria-hidden="true">▲</span>
+          </button>
+          <button class="control-button control-button--left" type="button" data-control="left" aria-label="왼쪽으로 이동">
+            <span aria-hidden="true">◀</span>
+          </button>
+          <button class="control-button control-button--down" type="button" data-control="down" aria-label="아래로 이동">
+            <span aria-hidden="true">▼</span>
+          </button>
+          <button class="control-button control-button--right" type="button" data-control="right" aria-label="오른쪽으로 이동">
+            <span aria-hidden="true">▶</span>
+          </button>
+        </div>
+        <button class="interact-button" type="button" data-control="interact" aria-label="가까운 대상과 상호작용">
+          <span class="interact-button__key" aria-hidden="true">E</span>
+          <span>확인</span>
+        </button>
+      </nav>
+    </main>
+
+    <dialog id="interaction-dialog" class="interaction-dialog" aria-labelledby="dialog-title">
+      <div class="dialog-frame">
+        <header class="dialog-header">
+          <div>
+            <p class="dialog-kicker">LOCAL INTERACTION TERMINAL</p>
+            <h2 id="dialog-title">업무 터미널</h2>
+          </div>
+          <button class="dialog-close" type="button" data-dialog-close aria-label="업무 창 닫기">
+            <span aria-hidden="true">×</span>
+          </button>
+        </header>
+
+        <div id="dialog-body" class="dialog-body">
+          <section id="intake-panel" class="dialog-panel intake-panel" aria-labelledby="intake-title">
+            <div class="panel-heading">
+              <span class="panel-code">INTAKE // 01</span>
+              <h3 id="intake-title">분석 의뢰서</h3>
+              <p>종목과 확인할 가설을 입력하면 여섯 에이전트가 각자의 자리에서 분석을 시작합니다.</p>
+            </div>
+
+            <div class="intake-console">
+              <section class="intake-now" aria-labelledby="intake-now-title">
+                <div class="section-rail">
+                  <span>01</span>
+                  <strong id="intake-now-title">즉시 분석</strong>
+                  <small>HUMAN INITIATED</small>
+                </div>
+                <form id="game-analysis-form" class="game-analysis-form" novalidate>
+                  <div class="field-group">
+                    <label for="game-ticker">종목 코드</label>
+                    <div class="ticker-field">
+                      <span aria-hidden="true">$</span>
+                      <input
+                        id="game-ticker"
+                        name="ticker"
+                        type="text"
+                        inputmode="text"
+                        autocomplete="off"
+                        autocapitalize="characters"
+                        spellcheck="false"
+                        maxlength="15"
+                        placeholder="AAPL"
+                        aria-describedby="game-ticker-help game-ticker-error"
+                        required
+                      />
+                    </div>
+                    <p id="game-ticker-help" class="field-help">영문·숫자·점·하이픈, 최대 15자</p>
+                    <p id="game-ticker-error" class="field-error" aria-live="polite"></p>
+                  </div>
+
+                  <div class="field-group">
+                    <label for="game-thesis">초기 투자 가설 <span>선택</span></label>
+                    <textarea
+                      id="game-thesis"
+                      name="thesis"
+                      rows="5"
+                      maxlength="800"
+                      placeholder="무엇을 확인하거나 반박해야 하는지 적으세요."
+                    ></textarea>
+                    <p class="field-help">입력한 내용은 분석팀 전원에게 동일하게 전달됩니다.</p>
+                  </div>
+
+                  <button id="game-submit" class="terminal-action" type="submit">
+                    <span class="terminal-action__key" aria-hidden="true">RUN</span>
+                    <span>위원회 분석 개시</span>
+                    <span aria-hidden="true">→</span>
+                  </button>
+                </form>
+              </section>
+
+              <section class="schedule-terminal" aria-labelledby="schedule-title">
+                <div class="section-rail">
+                  <span>02</span>
+                  <strong id="schedule-title">KST 일회성 예약</strong>
+                  <small>ANALYSIS ONLY</small>
+                </div>
+                <form id="schedule-analysis-form" class="schedule-analysis-form" novalidate>
+                  <div class="field-group">
+                    <label for="schedule-ticker">종목 코드</label>
+                    <div class="ticker-field">
+                      <span aria-hidden="true">$</span>
+                      <input
+                        id="schedule-ticker"
+                        name="ticker"
+                        type="text"
+                        inputmode="text"
+                        autocomplete="off"
+                        autocapitalize="characters"
+                        spellcheck="false"
+                        maxlength="15"
+                        placeholder="MSFT"
+                        aria-describedby="schedule-ticker-help schedule-error"
+                        required
+                      />
+                    </div>
+                    <p id="schedule-ticker-help" class="field-help">예약 시각에 분석만 시작하며 주문은 만들지 않습니다.</p>
+                  </div>
+                  <div class="field-group">
+                    <label for="schedule-time">실행 시각 <span>대한민국 표준시 KST</span></label>
+                    <input
+                      id="schedule-time"
+                      name="scheduled_for"
+                      type="datetime-local"
+                      step="60"
+                      aria-describedby="schedule-error"
+                      required
+                    />
+                  </div>
+                  <div class="field-group">
+                    <label for="schedule-thesis">초기 투자 가설 <span>선택</span></label>
+                    <textarea
+                      id="schedule-thesis"
+                      name="thesis"
+                      rows="4"
+                      maxlength="800"
+                      placeholder="예약 시점에 검증할 가설을 적으세요."
+                    ></textarea>
+                  </div>
+                  <p id="schedule-error" class="field-error" aria-live="polite"></p>
+                  <button id="schedule-submit" class="terminal-action terminal-action--compact" type="submit">
+                    <span class="terminal-action__key" aria-hidden="true">KST</span>
+                    <span>분석 예약 등록</span>
+                    <span aria-hidden="true">→</span>
+                  </button>
+                </form>
+                <p id="schedule-feedback" class="inline-feedback" role="status" aria-live="polite">
+                  예약된 시각에 분석팀만 호출됩니다. 실제 매매는 사람이 별도로 판단합니다.
+                </p>
+              </section>
+            </div>
+
+            <section class="schedule-ledger" aria-labelledby="schedule-ledger-title">
+              <div class="section-rail">
+                <span>03</span>
+                <strong id="schedule-ledger-title">예약 작업 대기열</strong>
+                <button id="schedule-refresh" class="rail-action" type="button">새로고침</button>
+              </div>
+              <div id="schedule-empty" class="empty-state empty-state--compact">
+                <strong>등록된 예약 분석이 없습니다.</strong>
+                <p>미래 KST 시각을 지정하면 이곳에서 예약 상태를 확인할 수 있습니다.</p>
+              </div>
+              <ol id="schedule-list" class="schedule-list" aria-label="예약된 일회성 분석 목록"></ol>
+            </section>
+
+            <section class="discovery-console" aria-labelledby="discovery-title">
+              <div class="section-rail">
+                <span>04</span>
+                <strong id="discovery-title">종목 발굴 모드</strong>
+                <small>PRICE SCREEN // HUMAN SELECT</small>
+              </div>
+
+              <div class="discovery-layout">
+                <section class="discovery-controls" aria-labelledby="discovery-strategy-title">
+                  <h4 id="discovery-strategy-title">1차 선별 전략</h4>
+                  <form id="discovery-screen-form" class="discovery-screen-form">
+                    <div class="field-group">
+                      <label for="discovery-strategy">스크리닝 프로필</label>
+                      <select id="discovery-strategy" name="strategy">
+                        <option value="balanced">균형형 · 추세와 방어력 종합</option>
+                        <option value="momentum">모멘텀형 · 가격 추세 우선</option>
+                        <option value="defensive">방어형 · 변동성 억제 우선</option>
+                      </select>
+                    </div>
+                    <button id="discovery-screen-submit" class="terminal-action terminal-action--compact" type="submit">
+                      <span class="terminal-action__key" aria-hidden="true">SCAN</span>
+                      <span>후보 8종목 선별</span>
+                      <span aria-hidden="true">→</span>
+                    </button>
+                  </form>
+                  <p id="discovery-feedback" class="inline-feedback" role="status" aria-live="polite">
+                    가격 데이터로 1차 후보를 좁습니다. 결과는 매수 추천이나 수익 보장이 아닙니다.
+                  </p>
+                  <div class="discovery-safety" role="note">
+                    <span>SAFETY LOCK</span>
+                    <strong>자동 주문 없음</strong>
+                    <p>선택한 후보도 에이전트 심층 분석과 사람의 최종 검토를 거칩니다.</p>
+                  </div>
+
+                  <dl id="discovery-summary" class="discovery-summary" hidden>
+                    <div>
+                      <dt>STRATEGY</dt>
+                      <dd id="discovery-summary-strategy">—</dd>
+                    </div>
+                    <div>
+                      <dt>UNIVERSE</dt>
+                      <dd id="discovery-summary-universe">—</dd>
+                    </div>
+                    <div>
+                      <dt>SHORTLIST</dt>
+                      <dd id="discovery-summary-count">0</dd>
+                    </div>
+                  </dl>
+                  <p id="discovery-disclaimer" class="discovery-disclaimer"></p>
+                  <details id="discovery-excluded" class="discovery-excluded" hidden>
+                    <summary>제외 종목과 사유 보기</summary>
+                    <ul id="discovery-excluded-list"></ul>
+                  </details>
+                </section>
+
+                <section class="discovery-candidates" aria-labelledby="discovery-candidates-title">
+                  <div class="discovery-candidates__heading">
+                    <div>
+                      <h4 id="discovery-candidates-title">선별 후보 랙</h4>
+                      <p>최대 3개를 선택해 기존 여섯 에이전트의 심층 분석으로 넘기세요.</p>
+                    </div>
+                    <strong id="discovery-selection-count" aria-live="polite">0 / 3 SELECTED</strong>
+                  </div>
+                  <form id="discovery-analyze-form">
+                    <div id="discovery-empty" class="empty-state">
+                      <span aria-hidden="true">⌁</span>
+                      <strong>아직 선별된 종목이 없습니다.</strong>
+                      <p>왼쪽에서 전략을 선택하고 1차 선별을 실행하세요.</p>
+                    </div>
+                    <ol id="discovery-candidate-list" class="discovery-candidate-list" aria-label="심층 분석 후보 선택"></ol>
+                    <button id="discovery-analyze-submit" class="terminal-action discovery-analyze-submit" type="submit" disabled>
+                      <span class="terminal-action__key" aria-hidden="true">MAX3</span>
+                      <span>선택 후보 심층 분석</span>
+                      <span aria-hidden="true">→</span>
+                    </button>
+                  </form>
+                </section>
+              </div>
+
+              <section class="discovery-runs" aria-labelledby="discovery-runs-title">
+                <div class="section-rail">
+                  <span>05</span>
+                  <strong id="discovery-runs-title">심층 분석 배정 결과</strong>
+                  <small>DECISIONS → COMMITTEE ARCHIVE</small>
+                </div>
+                <div id="discovery-runs-empty" class="empty-state empty-state--compact">
+                  <strong>발굴 후보에서 시작한 분석이 없습니다.</strong>
+                  <p>완료된 분석의 결정 카드는 투자위원회 컨트롤룸 아카이브에서 확인할 수 있습니다.</p>
+                </div>
+                <ol id="discovery-run-list" class="discovery-run-list" aria-label="발굴 후보 심층 분석 실행 목록"></ol>
+              </section>
+            </section>
+          </section>
+
+          <section id="agent-panel" class="dialog-panel agent-panel" aria-labelledby="agent-detail-role" hidden>
+            <div class="agent-detail-heading">
+              <div>
+                <span class="panel-code">AGENT WORKSTATION // HUMAN DIRECTED</span>
+                <h3 id="agent-detail-role">분석 에이전트</h3>
+                <p class="panel-subtitle">업무를 맡기고 중간보고를 요청할 수 있습니다. 주문이나 자동매매는 실행하지 않습니다.</p>
+              </div>
+              <span id="agent-detail-status" class="detail-status">대기</span>
+            </div>
+
+            <div class="workstation-layout">
+              <div class="workstation-report">
+                <div class="section-rail">
+                  <span>01</span>
+                  <strong>현재 분석 보고</strong>
+                </div>
+                <div class="report-block report-block--summary">
+                  <h4>요약 보고</h4>
+                  <p id="agent-detail-summary">아직 제출된 분석 보고서가 없습니다.</p>
+                </div>
+
+                <div class="report-columns">
+                  <section class="report-block" aria-labelledby="agent-points-title">
+                    <h4 id="agent-points-title">핵심 관찰</h4>
+                    <ul id="agent-detail-points" class="report-list">
+                      <li>등록된 관찰이 없습니다.</li>
+                    </ul>
+                  </section>
+                  <section class="report-block report-block--risk" aria-labelledby="agent-risks-title">
+                    <h4 id="agent-risks-title">위험 신호</h4>
+                    <ul id="agent-detail-risks" class="report-list">
+                      <li>등록된 위험이 없습니다.</li>
+                    </ul>
+                  </section>
+                </div>
+              </div>
+
+              <aside class="workstation-tasks" aria-labelledby="agent-tasks-title">
+                <div class="section-rail">
+                  <span>02</span>
+                  <strong id="agent-tasks-title">역할별 업무 보드</strong>
+                  <small id="agent-task-count">0 TASKS</small>
+                </div>
+
+                <form id="agent-task-form" class="agent-task-form">
+                  <input id="agent-task-role" name="role" type="hidden" />
+                  <div class="field-group">
+                    <label for="agent-task-title">업무 제목</label>
+                    <input
+                      id="agent-task-title"
+                      name="title"
+                      type="text"
+                      maxlength="120"
+                      placeholder="예. 최근 실적의 마진 지속성 재검증"
+                      required
+                    />
+                  </div>
+                  <div class="field-group">
+                    <label for="agent-task-instructions">조사 지시</label>
+                    <textarea
+                      id="agent-task-instructions"
+                      name="instructions"
+                      rows="3"
+                      maxlength="1200"
+                      placeholder="확인할 주장, 필요한 근거, 반증 조건을 구체적으로 적으세요."
+                      required
+                    ></textarea>
+                  </div>
+                  <button id="agent-task-submit" class="terminal-action terminal-action--compact" type="submit">
+                    <span class="terminal-action__key" aria-hidden="true">ADD</span>
+                    <span>이 역할에 분석 업무 맡기기</span>
+                    <span aria-hidden="true">→</span>
+                  </button>
+                </form>
+
+                <p id="agent-task-feedback" class="inline-feedback" role="status" aria-live="polite">
+                  현재 분석 실행을 선택하면 역할별 업무를 관리할 수 있습니다.
+                </p>
+                <div id="agent-task-empty" class="empty-state">
+                  <span aria-hidden="true">＋</span>
+                  <strong>추가 업무가 없습니다.</strong>
+                  <p>위 양식으로 이 역할에 검증 업무를 맡겨보세요.</p>
+                </div>
+                <ol id="agent-task-list" class="agent-task-list" aria-label="이 역할에 배정된 분석 업무"></ol>
+              </aside>
+            </div>
+          </section>
+
+          <section id="committee-panel" class="dialog-panel committee-panel" aria-labelledby="committee-title" hidden>
+            <div class="committee-heading">
+              <div>
+                <span class="panel-code">INVESTMENT COMMITTEE // HUMAN CONTROL ROOM</span>
+                <h3 id="committee-title">투자위원회 회의실</h3>
+                <p class="panel-subtitle">에이전트 토론과 근거를 검토한 뒤 최종 판단은 사람이 직접 기록합니다.</p>
+              </div>
+              <strong id="committee-session-status" class="decision-recommendation">회의 없음</strong>
+            </div>
+
+            <div class="committee-console">
+              <section class="committee-launch" aria-labelledby="committee-launch-title">
+                <div class="section-rail">
+                  <span>01</span>
+                  <strong id="committee-launch-title">회의 소집</strong>
+                </div>
+                <form id="committee-start-form" class="committee-start-form">
+                  <div class="field-group">
+                    <label for="committee-topic">토론 주제</label>
+                    <textarea
+                      id="committee-topic"
+                      name="topic"
+                      rows="3"
+                      maxlength="800"
+                      placeholder="예. 현재 가격에서 상승 여력과 하방 위험 중 어느 쪽이 더 큰가?"
+                      required
+                    ></textarea>
+                  </div>
+                  <fieldset class="participant-picker">
+                    <legend>참가 역할</legend>
+                    <label><input type="checkbox" name="participants" value="fundamental" checked /> 기본면</label>
+                    <label><input type="checkbox" name="participants" value="technical" checked /> 기술</label>
+                    <label><input type="checkbox" name="participants" value="news" checked /> 뉴스</label>
+                    <label><input type="checkbox" name="participants" value="bull" checked /> BULL</label>
+                    <label><input type="checkbox" name="participants" value="bear" checked /> BEAR</label>
+                    <label><input type="checkbox" name="participants" value="head_trader" checked /> 위원장</label>
+                  </fieldset>
+                  <div class="committee-launch-actions">
+                    <button id="committee-start" class="terminal-action terminal-action--compact" type="submit">
+                      <span class="terminal-action__key" aria-hidden="true">IC</span>
+                      <span>위원회 시작</span>
+                      <span aria-hidden="true">→</span>
+                    </button>
+                    <button id="committee-finish" class="task-action" type="button" disabled>회의록 확정</button>
+                    <button id="committee-stop" class="danger-action" type="button" disabled>회의 중단</button>
+                  </div>
+                </form>
+                <p id="committee-feedback" class="inline-feedback" role="status" aria-live="polite">
+                  분석 실행을 선택하면 위원회를 소집할 수 있습니다.
+                </p>
+              </section>
+
+              <section class="committee-live" aria-labelledby="committee-live-title">
+                <div class="section-rail">
+                  <span>02</span>
+                  <strong id="committee-live-title">발언 타임라인</strong>
+                  <small id="committee-topic-readout">주제 미정</small>
+                </div>
+                <div id="committee-empty" class="empty-state">
+                  <span aria-hidden="true">◇</span>
+                  <strong>진행 중인 위원회가 없습니다.</strong>
+                  <p>참가자와 주제를 정해 사람 감독형 토론을 시작하세요.</p>
+                </div>
+                <ol id="committee-timeline" class="committee-timeline" aria-label="위원회 발언 순서"></ol>
+
+                <form id="committee-command-form" class="committee-command-form">
+                  <label for="committee-command-role">특정 역할 추가 발언</label>
+                  <div class="command-row">
+                    <select id="committee-command-role" name="role">
+                      <option value="fundamental">기본면 분석가</option>
+                      <option value="technical">기술 분석가</option>
+                      <option value="news">뉴스 분석가</option>
+                      <option value="bull">BULL 연구원</option>
+                      <option value="bear">BEAR 연구원</option>
+                      <option value="head_trader">투자위원장</option>
+                    </select>
+                    <input
+                      id="committee-command-prompt"
+                      name="prompt"
+                      type="text"
+                      maxlength="500"
+                      placeholder="추가로 검토할 질문이나 반론"
+                    />
+                    <button id="committee-command-submit" type="submit">발언 요청</button>
+                  </div>
+                </form>
+              </section>
+            </div>
+
+            <div class="committee-evidence-grid">
+              <section class="evidence-ledger" aria-labelledby="committee-claims-title">
+                <div class="section-rail">
+                  <span>03</span>
+                  <strong id="committee-claims-title">CLAIM / EVIDENCE</strong>
+                </div>
+                <div id="committee-claims" class="claim-list">
+                  <div class="empty-state empty-state--compact">
+                    <strong>정리된 주장과 근거가 없습니다.</strong>
+                  </div>
+                </div>
+              </section>
+              <section class="minutes-board" aria-labelledby="committee-minutes-title">
+                <div class="section-rail">
+                  <span>04</span>
+                  <strong id="committee-minutes-title">회의록</strong>
+                </div>
+                <article id="committee-minutes" class="minutes-content">
+                  <p>회의가 종료되면 요약, 합의점, 미해결 쟁점이 여기에 기록됩니다.</p>
+                </article>
+              </section>
+            </div>
+
+            <section class="decision-draft" aria-labelledby="decision-draft-title">
+              <div class="section-rail">
+                <span>05</span>
+                <strong id="decision-draft-title">위원장 결정 초안</strong>
+                <strong id="game-decision-recommendation" class="decision-recommendation">결정 대기</strong>
+              </div>
+              <p id="game-decision-summary" class="decision-summary">
+                여섯 에이전트의 분석이 완료되면 위원장의 결정 초안이 이곳에 표시됩니다.
+              </p>
+
+              <div class="confidence-readout">
+                <span>MODEL CONFIDENCE</span>
+                <strong id="game-decision-confidence">—</strong>
+                <p>모델의 자기평가이며 실제 수익 확률이 아닙니다.</p>
+              </div>
+
+              <div class="report-columns">
+                <section class="report-block" aria-labelledby="decision-points-title">
+                  <h4 id="decision-points-title">위원회 핵심 근거</h4>
+                  <ul id="game-decision-points" class="report-list">
+                    <li>등록된 근거가 없습니다.</li>
+                  </ul>
+                </section>
+                <section class="report-block report-block--risk" aria-labelledby="decision-risks-title">
+                  <h4 id="decision-risks-title">주요 리스크</h4>
+                  <ul id="game-decision-risks" class="report-list">
+                    <li>등록된 리스크가 없습니다.</li>
+                  </ul>
+                </section>
+              </div>
+            </section>
+
+            <div class="review-gate">
+              <div class="human-gate-banner">
+                <span>HUMAN GATE</span>
+                <strong>자동 주문 없음 · 사람이 최종 판단</strong>
+              </div>
+              <label for="game-review-reason">사람 검토 사유</label>
+              <textarea
+                id="game-review-reason"
+                name="reason"
+                rows="4"
+                maxlength="600"
+                placeholder="승인·보류·기각 판단의 근거를 남기세요."
+              ></textarea>
+              <p class="field-help">결정과 사유는 검토 저널에 보존되며 매매 주문은 생성하지 않습니다.</p>
+
+              <div id="dialog-actions" class="review-actions" role="group" aria-label="최종 검토 결정">
+                <button class="review-button review-button--approve" type="button" data-review-decision="approve" data-review="approve">
+                  <span>APPROVE</span>
+                  <strong>승인</strong>
+                </button>
+                <button class="review-button review-button--hold" type="button" data-review-decision="hold" data-review="hold">
+                  <span>HOLD</span>
+                  <strong>보류</strong>
+                </button>
+                <button class="review-button review-button--reject" type="button" data-review-decision="reject" data-review="reject">
+                  <span>REJECT</span>
+                  <strong>기각</strong>
+                </button>
+              </div>
+            </div>
+
+            <section class="decision-archive" aria-labelledby="decision-archive-title">
+              <div class="section-rail">
+                <span>06</span>
+                <strong id="decision-archive-title">과거 의사결정 카드</strong>
+                <button id="decision-archive-refresh" class="rail-action" type="button">최신 기록</button>
+              </div>
+              <p id="decision-archive-feedback" class="inline-feedback" role="status" aria-live="polite">
+                이전 분석과 사람 검토 결과를 불러올 수 있습니다. 이 기록은 자동매매 지시가 아닙니다.
+              </p>
+              <div id="decision-archive-empty" class="empty-state empty-state--compact">
+                <strong>보관된 의사결정 카드가 없습니다.</strong>
+                <p>분석이 완료되면 종목별 결정과 사람 검토 이력이 여기에 쌓입니다.</p>
+              </div>
+              <ol id="decision-archive-list" class="decision-archive-list" aria-label="과거 의사결정 카드 목록"></ol>
+            </section>
+          </section>
+        </div>
+      </div>
+    </dialog>
+
+    <div id="game-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+    <noscript>
+      이 게임 화면은 이동, 상호작용, 실시간 분석 상태를 표시하기 위해 JavaScript가 필요합니다.
+      <a href="/">기존 대시보드로 돌아가기</a>
+    </noscript>
+  </body>
+</html>

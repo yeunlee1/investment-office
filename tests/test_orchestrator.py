@@ -1,0 +1,321 @@
+# 투자위원회의 단계별 에이전트 실행과 사람 검토 상태 전이를 검증한다.
+from __future__ import annotations
+
+from typing import Any, cast
+from uuid import uuid4
+
+import pytest
+from pydantic import BaseModel
+
+from investment_office.domain import (
+    AgentOutput,
+    AgentOutputStatus,
+    AgentRole,
+    AnalysisRunStatus,
+    CandidateStatus,
+    EventType,
+    ReviewDecision,
+    Snapshot,
+    SnapshotKind,
+)
+from investment_office.services.event_broker import EventBroker
+from investment_office.services.market_data import YahooFinanceClient
+from investment_office.services.orchestrator import (
+    DISCOVERY_ANALYSIS_THESIS,
+    AnalysisProvider,
+    AnalysisRunConflictError,
+    InvestmentCommittee,
+    RiskFunction,
+)
+from investment_office.storage import InMemoryStorage
+
+
+class FakeSnapshot(BaseModel):
+    ticker: str = "AAPL"
+    as_of: str = "2026-07-10"
+    close: float = 215.0
+    previous_close: float = 212.0
+    currency: str = "USD"
+    source_url: str = "https://query1.finance.yahoo.com/v8/finance/chart/AAPL"
+
+
+class FakeRiskResult(BaseModel):
+    position_pct: float = 4.0
+    risk_units: float = 0.5
+    entry_price: float = 215.0
+    stop_price: float = 204.0
+    warnings: list[str] = ["실적 발표 전후 변동성을 다시 확인한다."]
+
+
+class FakeMarketData:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.requested_tickers: list[str] = []
+
+    async def fetch_eod_snapshot(self, ticker: str) -> FakeSnapshot:
+        self.requested_tickers.append(ticker)
+        if self.error is not None:
+            raise self.error
+        return FakeSnapshot(ticker=ticker)
+
+
+class FakeProvider:
+    def __init__(self, *, fail_role: str | None = None) -> None:
+        self.fail_role = fail_role
+        self.calls: list[tuple[str, str, int]] = []
+
+    async def analyze(
+        self,
+        role: str,
+        ticker: str,
+        snapshot: dict[str, Any],
+        context: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        self.calls.append((role, ticker, len(context)))
+        if role == self.fail_role:
+            raise RuntimeError(f"{role} 분석 실패")
+        stance = "bullish" if role in {"bull", "head_trader"} else "neutral"
+        return {
+            "role": role,
+            "ticker": ticker,
+            "stance": stance,
+            "confidence": 0.76,
+            "summary": f"{role} 역할의 검증 가능한 요약",
+            "key_points": ["입력 스냅샷만 사용했다."],
+            "evidence": [
+                {
+                    "claim": "입력 스냅샷의 종가를 확인했다.",
+                    "source_url": snapshot["source_url"],
+                    "published_at": None,
+                }
+            ],
+            "risks": ["제공된 데이터 범위가 제한적이다."],
+            "recommendation": "사람의 최종 확인 후 조건부로 판단한다.",
+            "data_gaps": [],
+            "invalidations": ["입력 가격 조건이 바뀌면 재검토한다."],
+        }
+
+
+def fake_risk(snapshot: FakeSnapshot, chairman: dict[str, Any]) -> FakeRiskResult:
+    assert snapshot.ticker == chairman["ticker"]
+    return FakeRiskResult(entry_price=snapshot.close)
+
+
+def make_committee(
+    *,
+    provider: FakeProvider | None = None,
+    market_data: FakeMarketData | None = None,
+) -> tuple[InvestmentCommittee, InMemoryStorage, FakeProvider, FakeMarketData]:
+    storage = InMemoryStorage()
+    resolved_provider = provider or FakeProvider()
+    resolved_market = market_data or FakeMarketData()
+    committee = InvestmentCommittee(
+        storage=storage,
+        provider=cast(AnalysisProvider, resolved_provider),
+        market_data=cast(YahooFinanceClient, resolved_market),
+        broker=EventBroker(),
+        max_parallel_agents=3,
+        risk_function=cast(RiskFunction, fake_risk),
+    )
+    return committee, storage, resolved_provider, resolved_market
+
+
+@pytest.mark.asyncio
+async def test_analysis_workflow_metadata_is_stored_and_exposed() -> None:
+    committee, _, _, _ = make_committee()
+
+    manual = await committee.create_analysis("AAPL")
+    batch_id = str(uuid4())
+    discovery = await committee.create_analysis(
+        "MSFT",
+        DISCOVERY_ANALYSIS_THESIS,
+        workflow="discovery",
+        discovery_batch_id=batch_id,
+    )
+
+    assert manual.configuration["workflow"] == "manual"
+    assert committee.build_run_payload(manual.id)["workflow"] == "manual"
+    assert committee.build_run_payload(manual.id)["discovery_batch_id"] is None
+    assert discovery.configuration["workflow"] == "discovery"
+    assert discovery.configuration["discovery_batch_id"] == batch_id
+    assert committee.build_run_payload(discovery.id)["workflow"] == "discovery"
+    assert committee.build_run_payload(discovery.id)["discovery_batch_id"] == batch_id
+
+
+@pytest.mark.asyncio
+async def test_legacy_workflow_inference_is_conservative() -> None:
+    committee, storage, _, _ = make_committee()
+
+    discovery = await committee.create_analysis("AAPL", DISCOVERY_ANALYSIS_THESIS)
+    discovery.configuration.pop("workflow")
+    storage.save_analysis_run(discovery)
+
+    scheduled = await committee.create_analysis("MSFT", "예약 분석 가설")
+    scheduled.configuration.pop("workflow")
+    storage.save_analysis_run(scheduled)
+    storage.save_snapshot(
+        Snapshot(
+            candidate_id=scheduled.candidate_id,
+            analysis_run_id=scheduled.id,
+            kind=SnapshotKind.AGENT_STATE,
+            data={"record_type": "scheduled_analysis"},
+        )
+    )
+
+    unknown = await committee.create_analysis("NVDA", "일반 분석 가설")
+    unknown.configuration.pop("workflow")
+    storage.save_analysis_run(unknown)
+
+    assert committee.build_run_payload(discovery.id)["workflow"] == "discovery"
+    assert committee.build_run_payload(scheduled.id)["workflow"] == "scheduled"
+    assert committee.build_run_payload(unknown.id)["workflow"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("decision", "payload_status", "candidate_status"),
+    [
+        (ReviewDecision.APPROVED, "approved", CandidateStatus.APPROVED),
+        (ReviewDecision.DEFERRED, "hold", CandidateStatus.READY_FOR_REVIEW),
+        (ReviewDecision.REJECTED, "rejected", CandidateStatus.REJECTED),
+    ],
+)
+@pytest.mark.asyncio
+async def test_six_agent_analysis_then_human_review_state(
+    decision: ReviewDecision,
+    payload_status: str,
+    candidate_status: CandidateStatus,
+) -> None:
+    committee, storage, provider, market = make_committee()
+
+    run = await committee.create_analysis(" aapl ", "서비스 매출의 지속성을 검토한다.")
+    await committee.run_analysis(run.id)
+
+    completed = storage.get_analysis_run(run.id)
+    assert completed is not None
+    assert completed.status is AnalysisRunStatus.COMPLETED
+    assert market.requested_tickers == ["AAPL"]
+    assert {role for role, _, _ in provider.calls} == {
+        "fundamental",
+        "technical",
+        "news",
+        "bull",
+        "bear",
+        "head_trader",
+    }
+    assert {role: context_size for role, _, context_size in provider.calls} == {
+        "fundamental": 0,
+        "technical": 0,
+        "news": 0,
+        "bull": 3,
+        "bear": 3,
+        "head_trader": 5,
+    }
+    outputs = storage.list_agent_outputs(run.id)
+    assert len(outputs) == 7
+    assert {output.role for output in outputs} == {
+        AgentRole.FUNDAMENTAL,
+        AgentRole.TECHNICAL,
+        AgentRole.NEWS,
+        AgentRole.BULL,
+        AgentRole.BEAR,
+        AgentRole.HEAD_TRADER,
+        AgentRole.RISK_MANAGER,
+    }
+    draft = committee.build_run_payload(run.id)
+    assert draft["status"] == "review"
+    assert draft["progress"] == 100
+    assert len(draft["agents"]) == 6
+    assert draft["decision"]["human_approval_required"] is True
+    assert draft["decision"]["auto_trade"] is False
+
+    review = await committee.record_review(run.id, decision, "리스크 조건을 확인해 기록한다.")
+
+    assert review.decision is decision
+    assert storage.list_human_reviews(run.id) == [review]
+    candidate = storage.get_candidate(completed.candidate_id)
+    assert candidate is not None
+    assert candidate.status is candidate_status
+    reviewed = committee.build_run_payload(run.id)
+    assert reviewed["status"] == payload_status
+    assert reviewed["human_review"]["decision"] == decision.value
+    last_event = storage.list_events(analysis_run_id=run.id)[-1]
+    assert last_event.event_type is EventType.HUMAN_REVIEW_RECORDED
+
+
+@pytest.mark.asyncio
+async def test_agent_failure_is_persisted_without_reviewable_decision() -> None:
+    committee, storage, _, _ = make_committee(provider=FakeProvider(fail_role="technical"))
+    run = await committee.create_analysis("MSFT")
+
+    await committee.run_analysis(run.id)
+
+    failed = storage.get_analysis_run(run.id)
+    assert failed is not None
+    assert failed.status is AnalysisRunStatus.FAILED
+    assert failed.error_message == "technical 분석 실패"
+    candidate = storage.get_candidate(failed.candidate_id)
+    assert candidate is not None
+    assert candidate.status is CandidateStatus.QUEUED
+    payload = committee.build_run_payload(run.id)
+    assert payload["status"] == "failed"
+    assert payload["decision"] is None
+    assert any(
+        event.event_type is EventType.ANALYSIS_FAILED
+        for event in storage.list_events(analysis_run_id=run.id)
+    )
+
+    with pytest.raises(ValueError, match="완료된 분석만"):
+        await committee.record_review(
+            run.id,
+            ReviewDecision.APPROVED,
+            "실패한 분석은 승인하지 않는다.",
+        )
+
+
+@pytest.mark.asyncio
+async def test_restart_recovery_marks_running_run_and_agent_output_failed() -> None:
+    committee, storage, _, _ = make_committee()
+    run = await committee.create_analysis("META")
+    stored_run = storage.get_analysis_run(run.id)
+    candidate = storage.get_candidate(run.candidate_id)
+    assert stored_run is not None
+    assert candidate is not None
+    stored_run.status = AnalysisRunStatus.RUNNING
+    stored_run.started_at = stored_run.requested_at
+    candidate.status = CandidateStatus.ANALYZING
+    storage.save_analysis_run(stored_run)
+    storage.save_candidate(candidate)
+    output = AgentOutput(
+        analysis_run_id=run.id,
+        role=AgentRole.NEWS,
+        status=AgentOutputStatus.RUNNING,
+    )
+    storage.save_agent_output(output)
+
+    recovered = await committee.recover_interrupted_runs()
+
+    assert [item.id for item in recovered] == [run.id]
+    failed = storage.get_analysis_run(run.id)
+    assert failed is not None
+    assert failed.status is AnalysisRunStatus.FAILED
+    assert "서버 재시작" in (failed.error_message or "")
+    failed_candidate = storage.get_candidate(run.candidate_id)
+    assert failed_candidate is not None
+    assert failed_candidate.status is CandidateStatus.QUEUED
+    failed_output = storage.list_agent_outputs(run.id)[0]
+    assert failed_output.status is AgentOutputStatus.FAILED
+    assert "서버 재시작" in (failed_output.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_analysis_cannot_start_twice() -> None:
+    committee, storage, _, _ = make_committee()
+    run = await committee.create_analysis("AAPL")
+    stored_run = storage.get_analysis_run(run.id)
+    assert stored_run is not None
+    stored_run.status = AnalysisRunStatus.RUNNING
+    stored_run.started_at = stored_run.requested_at
+    storage.save_analysis_run(stored_run)
+
+    with pytest.raises(AnalysisRunConflictError, match="대기 중인 분석만"):
+        await committee.run_analysis(run.id)

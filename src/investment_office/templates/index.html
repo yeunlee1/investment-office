@@ -1,0 +1,150 @@
+<!-- Signal Foundry의 전체 운용 현황과 두 분석 진입점을 요약한다. -->
+{% extends "base.html" %}
+
+{% block title %}운영 허브 · Signal Foundry{% endblock %}
+{% block body_class %}page-hub{% endblock %}
+
+{% block content %}
+  <section class="page-hero page-hero--hub" aria-labelledby="hub-title">
+    <div class="page-hero__copy">
+      <p class="section-code">CONTROL DECK / 00</p>
+      <h1 id="hub-title">투자 리서치의<br /><span>현재 위치를 한눈에.</span></h1>
+      <p class="page-hero__lede">
+        직접 고른 종목과 시장에서 발굴한 후보를 분리해 운영하고, 분석 진행부터 사람의 최종 검토까지
+        한 흐름으로 추적합니다.
+      </p>
+    </div>
+    <div class="page-hero__notice" aria-label="운용 원칙">
+      <span class="notice-kicker">OPERATING RULE 01</span>
+      <strong>AI가 조사하고<br />사람이 결정합니다.</strong>
+      <p>실시간 자동매매 없이 완료 일봉과 근거 자료를 바탕으로 분석합니다.</p>
+    </div>
+  </section>
+
+  <section class="metric-rail" aria-labelledby="hub-status-title">
+    <div class="section-heading section-heading--rail">
+      <div>
+        <p class="section-code">LIVE INVENTORY</p>
+        <h2 id="hub-status-title">전체 운용 현황</h2>
+      </div>
+      <span class="section-note">저장된 분석 실행 기준</span>
+    </div>
+    <dl class="metric-grid">
+      <div class="metric-card metric-card--total">
+        <dt>전체 분석</dt>
+        <dd id="hub-total" class="mono">—</dd>
+        <small>ALL RUNS</small>
+      </div>
+      <div class="metric-card metric-card--active">
+        <dt>진행 중</dt>
+        <dd id="hub-active" class="mono">—</dd>
+        <small>ACTIVE</small>
+      </div>
+      <div class="metric-card metric-card--review">
+        <dt>검토 대기</dt>
+        <dd id="hub-review" class="mono">—</dd>
+        <small>HUMAN GATE</small>
+      </div>
+      <div class="metric-card metric-card--scheduled">
+        <dt>예약 작업</dt>
+        <dd id="hub-scheduled" class="mono">—</dd>
+        <small>SCHEDULED</small>
+      </div>
+    </dl>
+  </section>
+
+  <section class="workflow-grid" aria-labelledby="workflow-title">
+    <div class="section-heading workflow-grid__heading">
+      <div>
+        <p class="section-code">CHOOSE A WORKFLOW</p>
+        <h2 id="workflow-title">분석 작업공간</h2>
+      </div>
+      <p>목적에 맞는 흐름을 선택하세요.</p>
+    </div>
+
+    <article class="workflow-card workflow-card--manual">
+      <header class="workflow-card__header">
+        <div>
+          <span class="workflow-card__number mono">01</span>
+          <p class="section-code">USER SELECTED</p>
+          <h3>개별 종목 파악</h3>
+        </div>
+        <span class="workflow-card__tag">한 종목 집중 분석</span>
+      </header>
+      <p class="workflow-card__description">
+        관심 종목과 가설을 직접 입력합니다. 즉시 실행하거나 원하는 시각에 예약하고, 여섯 분석 역할의
+        보고서와 AI 회의를 한곳에서 검토합니다.
+      </p>
+      <ol class="workflow-steps" aria-label="개별 종목 분석 단계">
+        <li><span>01</span>종목과 가설 입력</li>
+        <li><span>02</span>에이전트 교차 검증</li>
+        <li><span>03</span>위원회 초안 확인</li>
+        <li><span>04</span>사람의 최종 결정</li>
+      </ol>
+      <div class="workflow-card__activity">
+        <div class="mini-heading">
+          <strong>최근 개별 분석</strong>
+          <span>LIVE QUEUE</span>
+        </div>
+        <ol id="hub-manual-runs" class="hub-run-list" aria-label="최근 개별 종목 분석">
+          <li class="empty-state empty-state--inline">아직 불러온 실행이 없습니다.</li>
+        </ol>
+      </div>
+      <a class="workflow-card__action" href="/analysis">
+        <span>개별 분석 시작</span>
+        <span aria-hidden="true">→</span>
+      </a>
+    </article>
+
+    <article class="workflow-card workflow-card--discovery">
+      <header class="workflow-card__header">
+        <div>
+          <span class="workflow-card__number mono">02</span>
+          <p class="section-code">MARKET SCREENED</p>
+          <h3>종목 추천</h3>
+        </div>
+        <span class="workflow-card__tag">후보 발굴·비교</span>
+      </header>
+      <p class="workflow-card__description">
+        미국 주식 유니버스를 정량 선별하고 상위 후보를 비교합니다. 최대 세 종목만 심층 분석해 선택의
+        근거와 위험을 나란히 확인합니다.
+      </p>
+      <ol class="workflow-steps" aria-label="종목 추천 분석 단계">
+        <li><span>01</span>완료 일봉 스캔</li>
+        <li><span>02</span>상위 후보 비교</li>
+        <li><span>03</span>최대 3종목 심층 분석</li>
+        <li><span>04</span>사람의 최종 검토</li>
+      </ol>
+      <div class="workflow-card__activity">
+        <div class="mini-heading">
+          <strong>최근 추천 분석</strong>
+          <span>DISCOVERY RUNS</span>
+        </div>
+        <ol id="hub-discovery-runs" class="hub-run-list" aria-label="최근 종목 추천 분석">
+          <li class="empty-state empty-state--inline">아직 불러온 실행이 없습니다.</li>
+        </ol>
+      </div>
+      <a class="workflow-card__action" href="/discovery">
+        <span>추천 후보 찾기</span>
+        <span aria-hidden="true">→</span>
+      </a>
+    </article>
+  </section>
+
+  <section class="surface recent-board" aria-labelledby="recent-title">
+    <div class="section-heading">
+      <div>
+        <p class="section-code">RECENT OPERATIONS</p>
+        <h2 id="recent-title">최근 실행</h2>
+      </div>
+      <a class="text-link" href="/history">전체 이력 보기 <span aria-hidden="true">→</span></a>
+    </div>
+    <ol id="hub-recent-runs" class="record-list" aria-label="최근 분석 실행">
+      <li class="empty-state">저장된 실행을 불러오는 중입니다.</li>
+    </ol>
+  </section>
+{% endblock %}
+
+{% block scripts %}
+  <script type="module" src="/static/hub.js?v=1"></script>
+{% endblock %}

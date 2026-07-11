@@ -1,0 +1,593 @@
+# 여섯 투자 에이전트와 리스크 정책을 순서대로 실행해 사람 검토안을 만든다.
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+from typing import Any, Literal, Protocol, cast
+from uuid import UUID
+
+from pydantic import JsonValue, TypeAdapter
+
+from investment_office.domain import (
+    AgentOutput,
+    AgentOutputStatus,
+    AgentRole,
+    AnalysisRun,
+    AnalysisRunStatus,
+    Candidate,
+    CandidateSource,
+    CandidateStatus,
+    Event,
+    EventType,
+    Evidence,
+    HumanReview,
+    ReviewDecision,
+    Snapshot,
+    SnapshotKind,
+    utc_now,
+)
+from investment_office.services.event_broker import EventBroker
+from investment_office.services.market_data import EODSnapshot, YahooFinanceClient
+from investment_office.services.risk import RiskAssessment, assess_risk
+from investment_office.storage import Storage
+
+JsonDict = dict[str, JsonValue]
+JSON_DICT_ADAPTER = TypeAdapter(JsonDict)
+AnalysisWorkflow = Literal["manual", "discovery", "scheduled"]
+AnalysisWorkflowView = Literal["manual", "discovery", "scheduled", "unknown"]
+DISCOVERY_ANALYSIS_THESIS = (
+    "가격·거래량 기반 1차 후보 발굴을 통과했다. 매수 보장이 아니므로 "
+    "실적·밸류에이션·뉴스 데이터 공백과 무효화 조건까지 심층 검토한다."
+)
+
+
+class AnalysisProvider(Protocol):
+    async def analyze(
+        self,
+        role: str,
+        ticker: str,
+        snapshot: dict[str, Any],
+        context: list[dict[str, Any]],
+    ) -> dict[str, Any]: ...
+
+
+RiskFunction = Callable[[EODSnapshot, dict[str, Any]], RiskAssessment]
+
+
+class AnalysisRunConflictError(RuntimeError):
+    """대기 중이 아닌 분석 실행을 중복 시작하려 할 때 발생한다."""
+
+
+class InvestmentCommittee:
+    """시장 스냅샷부터 사람 검토 직전 결정 카드까지 생성한다."""
+
+    def __init__(
+        self,
+        *,
+        storage: Storage,
+        provider: AnalysisProvider,
+        market_data: YahooFinanceClient,
+        broker: EventBroker,
+        max_parallel_agents: int = 3,
+        risk_function: RiskFunction = assess_risk,
+    ) -> None:
+        self.storage = storage
+        self.provider = provider
+        self.market_data = market_data
+        self.broker = broker
+        self._semaphore = asyncio.Semaphore(max_parallel_agents)
+        self._risk_function = risk_function
+
+    async def create_analysis(
+        self,
+        ticker: str,
+        thesis: str | None = None,
+        *,
+        workflow: AnalysisWorkflow = "manual",
+        discovery_batch_id: str | None = None,
+    ) -> AnalysisRun:
+        """사용자 후보와 대기 중인 분석 실행을 기록한다."""
+
+        if workflow not in {"manual", "discovery", "scheduled"}:
+            raise ValueError("workflow는 manual, discovery, scheduled 중 하나여야 합니다.")
+        normalized_batch_id = discovery_batch_id.strip() if discovery_batch_id else None
+        if discovery_batch_id is not None and not normalized_batch_id:
+            raise ValueError("discovery_batch_id는 공백일 수 없습니다.")
+
+        candidate = Candidate(ticker=ticker, thesis=thesis, source=CandidateSource.USER)
+        self.storage.save_candidate(candidate)
+        configuration: JsonDict = {
+            "execution": "human_in_the_loop",
+            "auto_trade": False,
+            "agent_count": 6,
+            "workflow": workflow,
+        }
+        if normalized_batch_id is not None:
+            configuration["discovery_batch_id"] = normalized_batch_id
+        run = AnalysisRun(
+            candidate_id=candidate.id,
+            configuration=configuration,
+        )
+        self.storage.save_analysis_run(run)
+        self.storage.save_snapshot(
+            Snapshot(
+                candidate_id=candidate.id,
+                analysis_run_id=run.id,
+                kind=SnapshotKind.INPUT,
+                data=JSON_DICT_ADAPTER.validate_python(
+                    {"ticker": candidate.ticker, "thesis": candidate.thesis}
+                ),
+            )
+        )
+        await self._record_event(
+            EventType.CANDIDATE_CREATED,
+            f"{candidate.ticker} 후보가 접수되었습니다.",
+            candidate=candidate,
+            run=run,
+            stream_type="analysis",
+        )
+        await self._record_event(
+            EventType.ANALYSIS_QUEUED,
+            "투자위원회 분석이 대기열에 등록되었습니다.",
+            candidate=candidate,
+            run=run,
+            stream_type="run",
+        )
+        return run
+
+    async def run_analysis(self, run_id: UUID) -> None:
+        """한 분석 실행을 완료하거나 실패 상태로 확정한다."""
+
+        run = self._require_run(run_id)
+        if run.status is not AnalysisRunStatus.QUEUED:
+            raise AnalysisRunConflictError(
+                f"대기 중인 분석만 시작할 수 있습니다. 현재 상태는 {run.status.value}입니다."
+            )
+        candidate = self._require_candidate(run.candidate_id)
+        now = utc_now()
+        run.status = AnalysisRunStatus.RUNNING
+        run.started_at = now
+        run.updated_at = now
+        candidate.status = CandidateStatus.ANALYZING
+        candidate.updated_at = now
+        self.storage.save_analysis_run(run)
+        self.storage.save_candidate(candidate)
+        await self._record_event(
+            EventType.ANALYSIS_STARTED,
+            "시장 데이터 수집을 시작했습니다.",
+            candidate=candidate,
+            run=run,
+            stream_type="run",
+        )
+
+        try:
+            market_snapshot = await self.market_data.fetch_eod_snapshot(candidate.ticker)
+            market_payload = market_snapshot.model_dump(mode="json")
+            self.storage.save_snapshot(
+                Snapshot(
+                    candidate_id=candidate.id,
+                    analysis_run_id=run.id,
+                    kind=SnapshotKind.MARKET_DATA,
+                    data=JSON_DICT_ADAPTER.validate_python(market_payload),
+                )
+            )
+
+            first_stage = await asyncio.gather(
+                self._run_agent(run, candidate, AgentRole.FUNDAMENTAL, market_payload, []),
+                self._run_agent(run, candidate, AgentRole.TECHNICAL, market_payload, []),
+                self._run_agent(run, candidate, AgentRole.NEWS, market_payload, []),
+            )
+            first_context = [result.model_dump(mode="json") for result in first_stage]
+            debate = await asyncio.gather(
+                self._run_agent(run, candidate, AgentRole.BULL, market_payload, first_context),
+                self._run_agent(run, candidate, AgentRole.BEAR, market_payload, first_context),
+            )
+            committee_context = first_context + [
+                result.model_dump(mode="json") for result in debate
+            ]
+            chairman = await self._run_agent(
+                run,
+                candidate,
+                AgentRole.HEAD_TRADER,
+                market_payload,
+                committee_context,
+            )
+            chairman_payload = cast(dict[str, Any], chairman.data)
+            risk = self._risk_function(market_snapshot, chairman_payload)
+            risk_payload = risk.model_dump(mode="json")
+            risk_output = AgentOutput(
+                analysis_run_id=run.id,
+                role=AgentRole.RISK_MANAGER,
+                status=AgentOutputStatus.COMPLETED,
+                content="결정론적 리스크 정책이 비중과 무효화 조건을 계산했습니다.",
+                data=JSON_DICT_ADAPTER.validate_python(risk_payload),
+            )
+            self.storage.save_agent_output(risk_output)
+
+            decision = self._build_decision(candidate, chairman_payload, risk_payload)
+            self.storage.save_snapshot(
+                Snapshot(
+                    candidate_id=candidate.id,
+                    analysis_run_id=run.id,
+                    kind=SnapshotKind.DECISION,
+                    data=JSON_DICT_ADAPTER.validate_python(decision),
+                )
+            )
+            finished = utc_now()
+            run.status = AnalysisRunStatus.COMPLETED
+            run.completed_at = finished
+            run.updated_at = finished
+            candidate.status = CandidateStatus.READY_FOR_REVIEW
+            candidate.updated_at = finished
+            self.storage.save_analysis_run(run)
+            self.storage.save_candidate(candidate)
+            await self._record_event(
+                EventType.ANALYSIS_COMPLETED,
+                "위원장 초안이 도착했습니다. 사람의 검토가 필요합니다.",
+                candidate=candidate,
+                run=run,
+                stream_type="run",
+                payload={"decision": decision},
+            )
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
+                raise
+            failed_at = utc_now()
+            run.status = AnalysisRunStatus.FAILED
+            run.error_message = str(exc)[:4_000]
+            run.completed_at = failed_at
+            run.updated_at = failed_at
+            candidate.status = CandidateStatus.QUEUED
+            candidate.updated_at = failed_at
+            self.storage.save_analysis_run(run)
+            self.storage.save_candidate(candidate)
+            await self._record_event(
+                EventType.ANALYSIS_FAILED,
+                f"분석이 실패했습니다. {str(exc)[:500]}",
+                candidate=candidate,
+                run=run,
+                stream_type="fault",
+            )
+
+    async def recover_interrupted_runs(self) -> list[AnalysisRun]:
+        """서버 재시작 전에 실행 중이던 분석을 명시적인 실패 상태로 복구한다."""
+
+        recovered: list[AnalysisRun] = []
+        for run in self.storage.list_analysis_runs(status=AnalysisRunStatus.RUNNING):
+            candidate = self._require_candidate(run.candidate_id)
+            failed_at = utc_now()
+            detail = (
+                "서버 재시작으로 분석 실행이 중단되었습니다. 저장된 부분 결과를 확인한 뒤 "
+                "필요하면 새 분석을 요청하세요."
+            )
+            for output in self.storage.list_agent_outputs(run.id):
+                if output.status is not AgentOutputStatus.RUNNING:
+                    continue
+                output.status = AgentOutputStatus.FAILED
+                output.error_message = detail
+                output.updated_at = failed_at
+                self.storage.save_agent_output(output)
+            run.status = AnalysisRunStatus.FAILED
+            run.error_message = detail
+            run.completed_at = failed_at
+            run.updated_at = failed_at
+            candidate.status = CandidateStatus.QUEUED
+            candidate.updated_at = failed_at
+            self.storage.save_analysis_run(run)
+            self.storage.save_candidate(candidate)
+            await self._record_event(
+                EventType.ANALYSIS_FAILED,
+                detail,
+                candidate=candidate,
+                run=run,
+                stream_type="fault",
+            )
+            recovered.append(run)
+        return recovered
+
+    async def record_review(
+        self,
+        run_id: UUID,
+        decision: ReviewDecision,
+        reason: str,
+    ) -> HumanReview:
+        """완료된 초안에 대한 사람의 최종 게이트 결정을 기록한다."""
+
+        run = self._require_run(run_id)
+        candidate = self._require_candidate(run.candidate_id)
+        if run.status is not AnalysisRunStatus.COMPLETED:
+            raise ValueError("완료된 분석만 검토할 수 있습니다.")
+        if self.storage.list_human_reviews(run.id):
+            raise ValueError("이 분석에는 이미 사람의 결정이 기록되었습니다.")
+        review = HumanReview(
+            candidate_id=candidate.id,
+            analysis_run_id=run.id,
+            decision=decision,
+            rationale=reason,
+        )
+        self.storage.save_human_review(review)
+        if decision is ReviewDecision.APPROVED:
+            candidate.status = CandidateStatus.APPROVED
+        elif decision is ReviewDecision.REJECTED:
+            candidate.status = CandidateStatus.REJECTED
+        else:
+            candidate.status = CandidateStatus.READY_FOR_REVIEW
+        candidate.updated_at = utc_now()
+        self.storage.save_candidate(candidate)
+        await self._record_event(
+            EventType.HUMAN_REVIEW_RECORDED,
+            f"사람의 결정이 기록되었습니다. {decision.value}",
+            candidate=candidate,
+            run=run,
+            stream_type="review",
+            payload={"decision": decision.value, "reason": reason},
+        )
+        return review
+
+    def build_run_payload(self, run_id: UUID) -> dict[str, Any]:
+        """프런트엔드가 바로 소비할 수 있는 실행 상태를 조립한다."""
+
+        run = self._require_run(run_id)
+        candidate = self._require_candidate(run.candidate_id)
+        outputs = self.storage.list_agent_outputs(run.id)
+        visible_outputs = [
+            output for output in outputs if output.role is not AgentRole.RISK_MANAGER
+        ]
+        reviews = self.storage.list_human_reviews(run.id)
+        decisions = self.storage.list_snapshots(run.id, kind=SnapshotKind.DECISION)
+        review = reviews[0] if reviews else None
+        decision = decisions[0].data if decisions else None
+        workflow, discovery_batch_id = self._workflow_metadata(run, candidate)
+
+        status = run.status.value
+        if run.status is AnalysisRunStatus.COMPLETED:
+            if review is None:
+                status = "review"
+            elif review.decision is ReviewDecision.APPROVED:
+                status = "approved"
+            elif review.decision is ReviewDecision.REJECTED:
+                status = "rejected"
+            else:
+                status = "hold"
+
+        agents = [self._output_payload(output) for output in visible_outputs]
+        completed_count = len([item for item in agents if item["status"] == "done"])
+        progress = min(100, round(completed_count / 6 * 100))
+        return {
+            "run_id": str(run.id),
+            "candidate_id": str(candidate.id),
+            "ticker": candidate.ticker,
+            "thesis": candidate.thesis,
+            "workflow": workflow,
+            "discovery_batch_id": discovery_batch_id,
+            "status": status,
+            "progress": progress,
+            "message": self._status_message(status),
+            "created_at": run.requested_at.isoformat(),
+            "started_at": run.started_at.isoformat() if run.started_at else None,
+            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+            "agents": agents,
+            "decision": decision,
+            "human_review": (
+                {
+                    "decision": review.decision.value,
+                    "reason": review.rationale,
+                    "created_at": review.created_at.isoformat(),
+                }
+                if review
+                else None
+            ),
+            "error": run.error_message,
+        }
+
+    def _workflow_metadata(
+        self,
+        run: AnalysisRun,
+        candidate: Candidate,
+    ) -> tuple[AnalysisWorkflowView, str | None]:
+        configured_workflow = run.configuration.get("workflow")
+        if configured_workflow == "manual":
+            workflow: AnalysisWorkflowView = "manual"
+        elif configured_workflow == "discovery":
+            workflow = "discovery"
+        elif configured_workflow == "scheduled" or self._has_schedule_snapshot(run.id):
+            workflow = "scheduled"
+        elif candidate.thesis == DISCOVERY_ANALYSIS_THESIS:
+            workflow = "discovery"
+        else:
+            workflow = "unknown"
+
+        configured_batch_id = run.configuration.get("discovery_batch_id")
+        discovery_batch_id = (
+            configured_batch_id.strip()
+            if isinstance(configured_batch_id, str) and configured_batch_id.strip()
+            else None
+        )
+        return workflow, discovery_batch_id
+
+    def _has_schedule_snapshot(self, run_id: UUID) -> bool:
+        return any(
+            snapshot.data.get("record_type") == "scheduled_analysis"
+            for snapshot in self.storage.list_snapshots(run_id, kind=SnapshotKind.AGENT_STATE)
+        )
+
+    async def _run_agent(
+        self,
+        run: AnalysisRun,
+        candidate: Candidate,
+        role: AgentRole,
+        snapshot: dict[str, Any],
+        context: list[dict[str, Any]],
+    ) -> AgentOutput:
+        output = AgentOutput(
+            analysis_run_id=run.id,
+            role=role,
+            status=AgentOutputStatus.RUNNING,
+        )
+        self.storage.save_agent_output(output)
+        await self._record_event(
+            EventType.STATUS_CHANGED,
+            f"{role.value} 에이전트가 분석을 시작했습니다.",
+            candidate=candidate,
+            run=run,
+            stream_type="agent",
+            payload={"role": role.value, "status": "running"},
+        )
+        try:
+            async with self._semaphore:
+                result = await self.provider.analyze(
+                    role.value, candidate.ticker, snapshot, context
+                )
+            validated = JSON_DICT_ADAPTER.validate_python(result)
+            evidence = [
+                Evidence(title=str(item.get("claim", "근거")), url=item.get("source_url"))
+                for item in result.get("evidence", [])
+                if isinstance(item, dict)
+            ]
+            output.status = AgentOutputStatus.COMPLETED
+            output.content = str(result.get("summary", ""))
+            output.confidence = float(result["confidence"])
+            output.evidence = evidence
+            output.data = validated
+            output.updated_at = utc_now()
+            self.storage.save_agent_output(output)
+            await self._record_event(
+                EventType.AGENT_OUTPUT_RECORDED,
+                f"{role.value} 에이전트가 의견을 제출했습니다.",
+                candidate=candidate,
+                run=run,
+                stream_type="agent",
+                payload={
+                    "role": role.value,
+                    "status": "done",
+                    "summary": output.content,
+                },
+            )
+            return output
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
+                raise
+            output.status = AgentOutputStatus.FAILED
+            output.error_message = str(exc)[:4_000]
+            output.updated_at = utc_now()
+            self.storage.save_agent_output(output)
+            await self._record_event(
+                EventType.AGENT_OUTPUT_RECORDED,
+                f"{role.value} 에이전트가 실패했습니다. {str(exc)[:300]}",
+                candidate=candidate,
+                run=run,
+                stream_type="fault",
+                payload={"role": role.value, "status": "failed", "error": str(exc)[:500]},
+            )
+            raise
+
+    async def _record_event(
+        self,
+        event_type: EventType,
+        message: str,
+        *,
+        candidate: Candidate,
+        run: AnalysisRun,
+        stream_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> Event:
+        event = Event(
+            event_type=event_type,
+            message=message,
+            candidate_id=candidate.id,
+            analysis_run_id=run.id,
+            payload=JSON_DICT_ADAPTER.validate_python(payload or {}),
+        )
+        self.storage.append_event(event)
+        stream_payload: dict[str, Any] = {
+            "event_id": str(event.id),
+            "type": stream_type,
+            "event_type": event.event_type.value,
+            "message": event.message,
+            "candidate_id": str(candidate.id),
+            "run_id": str(run.id),
+            "created_at": event.created_at.isoformat(),
+            **(payload or {}),
+        }
+        await self.broker.publish(stream_payload)
+        return event
+
+    def _require_run(self, run_id: UUID) -> AnalysisRun:
+        run = self.storage.get_analysis_run(run_id)
+        if run is None:
+            raise LookupError("분석 실행을 찾을 수 없습니다.")
+        return run
+
+    def _require_candidate(self, candidate_id: UUID) -> Candidate:
+        candidate = self.storage.get_candidate(candidate_id)
+        if candidate is None:
+            raise LookupError("투자 후보를 찾을 수 없습니다.")
+        return candidate
+
+    @staticmethod
+    def _output_payload(output: AgentOutput) -> dict[str, Any]:
+        status = {
+            AgentOutputStatus.QUEUED: "queued",
+            AgentOutputStatus.RUNNING: "running",
+            AgentOutputStatus.COMPLETED: "done",
+            AgentOutputStatus.FAILED: "failed",
+        }[output.status]
+        return {
+            "id": str(output.id),
+            "role": output.role.value,
+            "status": status,
+            "summary": output.content,
+            "confidence": output.confidence,
+            "result": output.data,
+            "error": output.error_message,
+            "updated_at": output.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _build_decision(
+        candidate: Candidate,
+        chairman: dict[str, Any],
+        risk: dict[str, Any],
+    ) -> dict[str, Any]:
+        stance = str(chairman.get("stance", "neutral"))
+        recommendation = {
+            "bullish": "conditional buy",
+            "neutral": "hold and watch",
+            "bearish": "avoid",
+        }.get(stance, "hold and watch")
+        risk_warnings = risk.get("warnings", [])
+        risks = [str(item) for item in chairman.get("risks", [])]
+        if isinstance(risk_warnings, list):
+            risks.extend(
+                str(item)
+                for item in risk_warnings
+                if not str(item).startswith(("의장 위험:", "의장 무효화 조건:"))
+            )
+        risks = list(dict.fromkeys(risks))
+        return {
+            "ticker": candidate.ticker,
+            "recommendation": recommendation,
+            "stance": stance,
+            "confidence": chairman.get("confidence"),
+            "summary": chairman.get("summary"),
+            "key_points": chairman.get("key_points", []),
+            "risks": risks,
+            "invalidations": chairman.get("invalidations", []),
+            "data_gaps": chairman.get("data_gaps", []),
+            "chairman_recommendation": chairman.get("recommendation"),
+            "risk_plan": risk,
+            "human_approval_required": True,
+            "auto_trade": False,
+        }
+
+    @staticmethod
+    def _status_message(status: str) -> str:
+        return {
+            "queued": "분석 대기 중입니다.",
+            "running": "에이전트 팀이 분석 중입니다.",
+            "review": "위원장 초안이 도착했습니다. 사람이 결정해야 합니다.",
+            "approved": "사람이 승인한 분석입니다.",
+            "rejected": "사람이 기각한 분석입니다.",
+            "hold": "사람이 보류한 분석입니다.",
+            "failed": "분석이 실패했습니다.",
+        }.get(status, status)

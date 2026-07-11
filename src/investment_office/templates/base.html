@@ -1,0 +1,107 @@
+<!-- Signal Foundry 웹 콘솔의 공통 탐색과 시스템 상태를 구성한다. -->
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#18231f" />
+    <meta
+      name="description"
+      content="종목 분석, 후보 추천, AI 투자위원회와 사람의 최종 검토를 한곳에서 운영하는 Signal Foundry 로컬 리서치 콘솔"
+    />
+    <title>{% block title %}Signal Foundry{% endblock %}</title>
+    <link rel="stylesheet" href="/static/site.css?v=1" />
+    {% block head %}{% endblock %}
+  </head>
+  <body class="{% block body_class %}{% endblock %}">
+    <a class="skip-link" href="#main-content">본문으로 바로가기</a>
+    <div class="site-texture" aria-hidden="true"></div>
+
+    <header class="site-header">
+      <div class="site-header__primary">
+        <a class="site-brand" href="/" aria-label="Signal Foundry 대시보드 홈">
+          <span class="site-brand__mark" aria-hidden="true">SF</span>
+          <span class="site-brand__copy">
+            <strong>SIGNAL FOUNDRY</strong>
+            <small>HUMAN-GATED RESEARCH DESK</small>
+          </span>
+        </a>
+
+        <nav class="site-nav" aria-label="주요 메뉴">
+          <a
+            class="site-nav__link{% if request.url.path == '/' %} is-active{% endif %}"
+            href="/"
+            {% if request.url.path == '/' %}aria-current="page"{% endif %}
+          >
+            <span class="site-nav__index">00</span>
+            <span>운영 허브</span>
+          </a>
+          <a
+            class="site-nav__link{% if request.url.path == '/analysis' %} is-active{% endif %}"
+            href="/analysis"
+            {% if request.url.path == '/analysis' %}aria-current="page"{% endif %}
+          >
+            <span class="site-nav__index">01</span>
+            <span>개별 종목</span>
+          </a>
+          <a
+            class="site-nav__link{% if request.url.path == '/discovery' %} is-active{% endif %}"
+            href="/discovery"
+            {% if request.url.path == '/discovery' %}aria-current="page"{% endif %}
+          >
+            <span class="site-nav__index">02</span>
+            <span>종목 추천</span>
+          </a>
+          <a
+            class="site-nav__link{% if request.url.path == '/history' %} is-active{% endif %}"
+            href="/history"
+            {% if request.url.path == '/history' %}aria-current="page"{% endif %}
+          >
+            <span class="site-nav__index">03</span>
+            <span>완료 이력</span>
+          </a>
+        </nav>
+      </div>
+
+      <div class="system-strip" aria-label="시스템 운용 상태">
+        <div class="system-strip__label">
+          <span class="signal-pulse" aria-hidden="true"></span>
+          SYSTEM TELEMETRY
+        </div>
+        <dl class="system-strip__items">
+          <div>
+            <dt>AI PROVIDER</dt>
+            <dd id="site-provider" class="system-value" data-status="loading" aria-live="polite">
+              확인 중
+            </dd>
+          </div>
+          <div>
+            <dt>SCHEDULER</dt>
+            <dd id="site-scheduler" class="system-value" data-status="loading" aria-live="polite">
+              확인 중
+            </dd>
+          </div>
+          <div>
+            <dt>LOCAL TIME</dt>
+            <dd><time id="site-clock" class="system-value mono" datetime="">--:--:--</time></dd>
+          </div>
+        </dl>
+      </div>
+    </header>
+
+    <main id="main-content" class="site-main">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+      <p>
+        <strong>RESEARCH ONLY</strong>
+        자동 주문을 실행하지 않습니다. 모든 판단은 분석 초안이며 최종 결정은 사람이 내립니다.
+      </p>
+      <span class="mono">LOCAL NODE / 127.0.0.1</span>
+    </footer>
+
+    <div id="site-live-region" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

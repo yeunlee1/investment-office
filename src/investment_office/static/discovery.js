@@ -1,0 +1,332 @@
+// 종목추천 페이지에서 1차 선별과 복수 심층분석, 서버 기반 완료 이력을 관리한다.
+import {
+  API,
+  appendStatusBadge,
+  asArray,
+  asObject,
+  clearElement,
+  compactText,
+  createElement,
+  formatDateTime,
+  initSiteShell,
+  requestJson,
+  runProgress,
+  safeSourceUrl,
+  setFeedback,
+  setText,
+  statusInfo,
+} from "./site-common.js?v=1";
+
+const elements = {
+  screenForm: document.querySelector("#discovery-screen-form"),
+  strategy: document.querySelector("#discovery-strategy"),
+  feedback: document.querySelector("#discovery-feedback"),
+  universe: document.querySelector("#discovery-universe"),
+  qualified: document.querySelector("#discovery-qualified"),
+  shortlist: document.querySelector("#discovery-shortlist"),
+  candidateList: document.querySelector("#discovery-candidate-list"),
+  selection: document.querySelector("#discovery-selection"),
+  analyzeForm: document.querySelector("#discovery-analyze-form"),
+  analyzeButton: document.querySelector("#discovery-analyze"),
+  runList: document.querySelector("#discovery-run-list"),
+  runFeedback: document.querySelector("#discovery-run-feedback"),
+  live: document.querySelector("#site-live-region"),
+};
+
+const state = {
+  discovery: null,
+  runs: [],
+  latestBatchId: null,
+  pollTimer: null,
+  eventRefreshTimer: null,
+  loading: false,
+};
+
+const ACTIVE = new Set(["queued", "running"]);
+const DECIDED = new Set(["approved", "rejected", "hold", "complete"]);
+
+function setStage(stage, status, label) {
+  const element = document.querySelector(`[data-discovery-stage="${stage}"]`);
+  if (!element) return;
+  element.dataset.status = status;
+  setText(element.querySelector("output"), label, "대기");
+}
+
+function selectedTickers() {
+  return Array.from(elements.candidateList?.querySelectorAll('input[name="discovery-ticker"]:checked') || [])
+    .map((input) => input.value)
+    .filter(Boolean);
+}
+
+function updateSelection(changedInput = null) {
+  let selected = selectedTickers();
+  if (changedInput?.checked && selected.length > 3) {
+    changedInput.checked = false;
+    selected = selectedTickers();
+    setFeedback(elements.feedback, "심층분석 후보는 최대 3개까지 선택할 수 있습니다.", "error");
+  }
+  setText(elements.selection, `${selected.length} / 3 선택`);
+  if (elements.analyzeButton) elements.analyzeButton.disabled = selected.length === 0 || state.loading;
+}
+
+function verdictLabel(verdict) {
+  return {
+    review_first: "우선 검토",
+    watch: "관찰 후보",
+    exclude: "기준 미충족",
+  }[String(verdict || "watch")] || "관찰 후보";
+}
+
+function renderCandidates(candidates) {
+  clearElement(elements.candidateList);
+  const values = asArray(candidates).slice(0, 8);
+  if (!values.length) {
+    elements.candidateList?.append(createElement("li", "empty-state", "추천 후보 찾기를 실행하면 비교 카드가 표시됩니다."));
+    updateSelection();
+    return;
+  }
+  values.forEach((candidate, index) => {
+    const ticker = String(candidate.ticker || candidate.symbol || "").toUpperCase();
+    const item = createElement("li", "candidate-card");
+    const label = createElement("label", "candidate-card__select");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.name = "discovery-ticker";
+    checkbox.value = ticker;
+    checkbox.checked = index < 3;
+    const identity = createElement("span", "candidate-card__identity");
+    identity.append(createElement("small", "", `RANK ${candidate.rank ?? index + 1} · ${verdictLabel(candidate.verdict)}`));
+    identity.append(createElement("strong", "", ticker || "종목 미정"));
+    const score = createElement("span", "candidate-card__score", Number.isFinite(Number(candidate.score)) ? Number(candidate.score).toFixed(2) : "—");
+    label.append(checkbox, identity, score);
+    item.append(label);
+
+    const comparison = createElement("div", "candidate-card__comparison");
+    const reason = createElement("section");
+    reason.append(createElement("h3", "", "선별 근거"));
+    reason.append(createElement("p", "", compactText(asArray(candidate.reasons || candidate.key_points)[0], 145) || "근거 요약 없음"));
+    const risk = createElement("section");
+    risk.append(createElement("h3", "", "위험 신호"));
+    risk.append(createElement("p", "", compactText(asArray(candidate.risks)[0], 145) || "위험 신호 미보고"));
+    comparison.append(reason, risk);
+    item.append(comparison);
+
+    const sourceUrl = safeSourceUrl(candidate.source_url || candidate.source);
+    if (sourceUrl) {
+      const source = createElement("a", "candidate-card__source", "가격 데이터 출처 확인 ↗");
+      source.href = sourceUrl;
+      source.target = "_blank";
+      source.rel = "noreferrer";
+      item.append(source);
+    }
+    elements.candidateList?.append(item);
+  });
+  updateSelection();
+}
+
+function renderDiscovery(discovery) {
+  state.discovery = discovery;
+  const candidates = asArray(discovery?.candidates);
+  setText(elements.universe, discovery?.universe_size, "—");
+  setText(elements.qualified, discovery?.qualified_count, "—");
+  setText(elements.shortlist, candidates.length, "0");
+  renderCandidates(candidates);
+  setStage("scan", "done", `${discovery?.evaluated_count ?? discovery?.universe_size ?? 0} / ${discovery?.universe_size ?? 30}`);
+  setStage("shortlist", candidates.length ? "done" : "error", `${candidates.length}개`);
+  setStage("agents", "idle", candidates.length ? "선택 대기" : "후보 없음");
+  setStage("review", "idle", "분석 대기");
+}
+
+function latestBatchRuns() {
+  if (!state.runs.length) return [];
+  const firstBatch = state.runs.find((run) => run.discovery_batch_id)?.discovery_batch_id || null;
+  state.latestBatchId = firstBatch;
+  if (firstBatch) return state.runs.filter((run) => run.discovery_batch_id === firstBatch);
+  return state.runs.slice(0, 3);
+}
+
+function renderStagesFromRuns() {
+  const batch = latestBatchRuns();
+  if (!batch.length) return;
+  if (!state.discovery) {
+    setStage("scan", "done", "이전 실행");
+    setStage("shortlist", "done", `${batch.length}개 선택`);
+  }
+  const active = batch.filter((run) => ACTIVE.has(run.status)).length;
+  const failed = batch.filter((run) => run.status === "failed").length;
+  const review = batch.filter((run) => run.status === "review").length;
+  const decided = batch.filter((run) => DECIDED.has(run.status)).length;
+  if (active) setStage("agents", "active", `${batch.length - active} / ${batch.length}`);
+  else if (failed === batch.length) setStage("agents", "error", "전체 실패");
+  else setStage("agents", failed ? "error" : "done", `${batch.length - failed} / ${batch.length}`);
+  if (review) setStage("review", "active", `${review}건 대기`);
+  else if (decided) setStage("review", "done", `${decided}건 기록`);
+  else if (failed && !active) setStage("review", "error", "검토 불가");
+  else setStage("review", "idle", "분석 대기");
+}
+
+function renderRuns() {
+  const focusedControl = document.activeElement;
+  const focusedRunId = focusedControl instanceof HTMLElement && elements.runList?.contains(focusedControl)
+    ? focusedControl.dataset.runId
+    : null;
+  const focusedAction = focusedControl instanceof HTMLElement ? focusedControl.dataset.runAction : null;
+  clearElement(elements.runList);
+  if (!state.runs.length) {
+    elements.runList?.append(createElement("li", "empty-state", "서버에 저장된 종목추천 심층분석 내역이 없습니다."));
+    setFeedback(elements.runFeedback, "새 추천 배치를 시작하면 진행률과 완료 이력이 여기에 쌓입니다.");
+    return;
+  }
+  const currentBatch = new Set(latestBatchRuns().map((run) => run.run_id));
+  state.runs.forEach((run) => {
+    const item = createElement("li", "discovery-run-card");
+    if (currentBatch.has(run.run_id)) item.dataset.latest = "true";
+    const head = createElement("div", "discovery-run-card__header");
+    head.append(createElement("strong", "", run.ticker || "종목 미정"));
+    appendStatusBadge(head, run.status);
+    if (currentBatch.has(run.run_id)) head.append(createElement("span", "batch-badge", "최근 배치"));
+    const progress = runProgress(run);
+    const progressLine = createElement("div", "run-progress");
+    const track = createElement("div", "progress-track");
+    track.setAttribute("role", "progressbar");
+    track.setAttribute("aria-label", `${run.ticker || "종목"} 심층 분석 진행률`);
+    track.setAttribute("aria-valuenow", String(progress));
+    track.setAttribute("aria-valuemin", "0");
+    track.setAttribute("aria-valuemax", "100");
+    const bar = createElement("span", "progress-track__bar");
+    bar.style.width = `${progress}%`;
+    track.append(bar);
+    progressLine.append(track, createElement("strong", "", `${progress}%`));
+    const meta = createElement("p", "discovery-run-card__meta", `${formatDateTime(run.completed_at || run.created_at)} · ${run.message || "상세 확인"}`);
+    const actions = createElement("div", "discovery-run-card__actions");
+    const detail = createElement("a", "button button--secondary", run.status === "review" ? "사람 검토 열기" : "상세 워크벤치");
+    detail.href = `/analysis?run=${encodeURIComponent(run.run_id)}`;
+    detail.dataset.runId = run.run_id;
+    detail.dataset.runAction = "detail";
+    const history = createElement("a", "text-link", "완료 이력에서 보기");
+    history.href = `/history?run=${encodeURIComponent(run.run_id)}`;
+    history.dataset.runId = run.run_id;
+    history.dataset.runAction = "history";
+    actions.append(detail, history);
+    item.append(head, progressLine, meta, actions);
+    elements.runList?.append(item);
+  });
+  if (focusedRunId && focusedAction) {
+    const restoredControl = Array.from(elements.runList?.querySelectorAll("[data-run-id][data-run-action]") || [])
+      .find((control) => control.dataset.runId === focusedRunId && control.dataset.runAction === focusedAction);
+    restoredControl?.focus({ preventScroll: true });
+  }
+  setFeedback(elements.runFeedback, `서버에 저장된 추천 심층분석 ${state.runs.length}건을 표시합니다.`, "success");
+  renderStagesFromRuns();
+}
+
+function stopPolling() {
+  if (state.pollTimer) window.clearTimeout(state.pollTimer);
+  state.pollTimer = null;
+}
+
+function schedulePolling(delay = 2_800) {
+  stopPolling();
+  if (!state.runs.some((run) => ACTIVE.has(run.status))) return;
+  state.pollTimer = window.setTimeout(loadRuns, delay);
+}
+
+function scheduleEventRefresh() {
+  if (state.eventRefreshTimer) window.clearTimeout(state.eventRefreshTimer);
+  state.eventRefreshTimer = window.setTimeout(() => {
+    state.eventRefreshTimer = null;
+    void loadRuns();
+  }, 350);
+}
+
+async function loadRuns() {
+  try {
+    const payload = await requestJson(`${API.runs}?workflow=discovery&limit=200`);
+    state.runs = asArray(payload.runs);
+    renderRuns();
+    schedulePolling();
+  } catch (error) {
+    setFeedback(elements.runFeedback, `추천 분석 이력 조회 실패. ${error.message}`, "error");
+  }
+}
+
+async function submitScreen(event) {
+  event.preventDefault();
+  if (state.loading) return;
+  state.loading = true;
+  setFormDisabled(elements.screenForm, true);
+  updateSelection();
+  const strategy = elements.strategy?.value || "balanced";
+  setFeedback(elements.feedback, "미국 대형주 30종목의 완료 일봉을 비교하고 있습니다.");
+  setStage("scan", "active", "조회 중");
+  setStage("shortlist", "idle", "대기");
+  try {
+    const payload = await requestJson(API.discoveryScreen, {
+      method: "POST",
+      body: JSON.stringify({ strategy, limit: 8 }),
+    }, 120_000);
+    renderDiscovery(asObject(payload.discovery));
+    setFeedback(elements.feedback, `${asArray(payload.discovery?.candidates).length}개 후보를 선별했습니다. 매수 보장이 아닌 심층검토 대상입니다.`, "success");
+  } catch (error) {
+    setStage("scan", "error", "실패");
+    setStage("shortlist", "error", "중단");
+    setFeedback(elements.feedback, `후보 선별 실패. ${error.message}`, "error");
+  } finally {
+    state.loading = false;
+    setFormDisabled(elements.screenForm, false);
+    updateSelection();
+  }
+}
+
+function setFormDisabled(form, disabled) {
+  form?.querySelectorAll("input, select, button").forEach((control) => { control.disabled = disabled; });
+}
+
+async function submitAnalysis(event) {
+  event.preventDefault();
+  if (state.loading) return;
+  const tickers = selectedTickers();
+  if (!tickers.length || tickers.length > 3) {
+    setFeedback(elements.feedback, "심층분석 후보를 1개 이상 3개 이하로 선택하세요.", "error");
+    return;
+  }
+  state.loading = true;
+  if (elements.analyzeButton) elements.analyzeButton.disabled = true;
+  elements.candidateList?.querySelectorAll("input").forEach((input) => { input.disabled = true; });
+  setStage("agents", "active", "배정 중");
+  setFeedback(elements.feedback, `${tickers.join(", ")} 심층분석을 여섯 에이전트에게 배정하고 있습니다.`);
+  try {
+    const payload = await requestJson(API.discoveryAnalyze, {
+      method: "POST",
+      body: JSON.stringify({ tickers }),
+    }, 45_000);
+    const created = asArray(payload.runs);
+    state.latestBatchId = created[0]?.discovery_batch_id || null;
+    setFeedback(elements.feedback, `${created.length}개 종목의 심층분석을 시작했습니다. 자동 주문은 생성되지 않습니다.`, "success");
+    await loadRuns();
+  } catch (error) {
+    setStage("agents", "error", "배정 실패");
+    setFeedback(elements.feedback, `심층분석 시작 실패. ${error.message}`, "error");
+  } finally {
+    state.loading = false;
+    elements.candidateList?.querySelectorAll("input").forEach((input) => { input.disabled = false; });
+    updateSelection();
+  }
+}
+
+elements.screenForm?.addEventListener("submit", submitScreen);
+elements.analyzeForm?.addEventListener("submit", submitAnalysis);
+elements.candidateList?.addEventListener("change", (event) => {
+  const input = event.target.closest('input[name="discovery-ticker"]');
+  if (input instanceof HTMLInputElement) updateSelection(input);
+});
+window.addEventListener("beforeunload", () => {
+  stopPolling();
+  if (state.eventRefreshTimer) window.clearTimeout(state.eventRefreshTimer);
+});
+
+renderCandidates([]);
+await initSiteShell((_payload, eventType) => {
+  if (["run", "analysis", "agent", "review", "fault"].includes(eventType)) scheduleEventRefresh();
+});
+await loadRuns();

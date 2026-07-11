@@ -1,0 +1,168 @@
+<!-- 시장 후보를 선별하고 최대 세 종목의 심층 분석을 운영한다. -->
+{% extends "base.html" %}
+
+{% block title %}종목 추천 · Signal Foundry{% endblock %}
+{% block body_class %}page-discovery{% endblock %}
+
+{% block content %}
+  <header class="page-heading page-heading--discovery">
+    <div>
+      <p class="section-code">WORKSPACE / 02 / MARKET SCREENED</p>
+      <h1>종목 추천</h1>
+      <p>
+        완료된 일봉 데이터로 미국 주식 후보를 먼저 비교합니다. 상위 후보 중 최대 세 종목만 에이전트
+        심층 분석에 보내고, 모든 결과는 사람의 검토를 기다립니다.
+      </p>
+    </div>
+    <aside class="page-heading__guard">
+      <span>SCREENING SCOPE</span>
+      <strong>가격·거래량 기반</strong>
+      <p>실적, 밸류에이션과 뉴스는 심층 분석 단계에서 확인합니다.</p>
+    </aside>
+  </header>
+
+  <section class="discovery-stage-rail" aria-labelledby="discovery-stage-title">
+    <div class="section-heading discovery-stage-rail__heading">
+      <div>
+        <p class="section-code">PIPELINE STATUS</p>
+        <h2 id="discovery-stage-title">추천 분석 흐름</h2>
+      </div>
+      <span class="section-note">자동 주문 없음</span>
+    </div>
+    <ol class="stage-list">
+      <li class="stage-card" data-discovery-stage="scan" data-status="idle">
+        <span class="stage-card__number mono">01</span>
+        <div>
+          <strong>유니버스 스캔</strong>
+          <small>완료 일봉 정량 비교</small>
+        </div>
+        <output id="discovery-stage-scan-output">대기</output>
+      </li>
+      <li class="stage-card" data-discovery-stage="shortlist" data-status="idle">
+        <span class="stage-card__number mono">02</span>
+        <div>
+          <strong>후보 선별</strong>
+          <small>상위 후보 비교</small>
+        </div>
+        <output id="discovery-stage-shortlist-output">대기</output>
+      </li>
+      <li class="stage-card" data-discovery-stage="agents" data-status="idle">
+        <span class="stage-card__number mono">03</span>
+        <div>
+          <strong>심층 분석</strong>
+          <small>최대 세 종목</small>
+        </div>
+        <output id="discovery-stage-agents-output">대기</output>
+      </li>
+      <li class="stage-card" data-discovery-stage="review" data-status="idle">
+        <span class="stage-card__number mono">04</span>
+        <div>
+          <strong>사람 검토</strong>
+          <small>최종 판단 대기</small>
+        </div>
+        <output id="discovery-stage-review-output">대기</output>
+      </li>
+    </ol>
+  </section>
+
+  <section class="discovery-layout" aria-labelledby="discovery-control-title">
+    <article class="surface discovery-control">
+      <header class="card-heading">
+        <span class="card-heading__index mono">A</span>
+        <div>
+          <p class="section-code">EOD SCREENER</p>
+          <h2 id="discovery-control-title">후보 선별 전략</h2>
+        </div>
+        <span class="status-badge status-badge--ready">READ ONLY</span>
+      </header>
+      <form id="discovery-screen-form" class="form-stack" novalidate>
+        <div class="field-group">
+          <label for="discovery-strategy">비교 전략</label>
+          <select id="discovery-strategy" name="strategy">
+            <option value="balanced">균형형 · 추세와 안정성 균형</option>
+            <option value="momentum">모멘텀형 · 최근 상승 강도 우선</option>
+            <option value="defensive">방어형 · 변동성과 안정성 우선</option>
+          </select>
+          <small>전략은 정량 점수의 가중치만 바꾸며 매수를 보장하지 않습니다.</small>
+        </div>
+        <p id="discovery-feedback" class="form-feedback" role="status" aria-live="polite">
+          전략을 선택하고 미국 주식 유니버스를 스캔하세요.
+        </p>
+        <button class="button button--primary button--wide" type="submit">
+          <span>추천 후보 스캔</span>
+          <span aria-hidden="true">↗</span>
+        </button>
+      </form>
+
+      <dl class="discovery-metrics" aria-label="후보 선별 집계">
+        <div>
+          <dt>UNIVERSE</dt>
+          <dd id="discovery-universe" class="mono">—</dd>
+          <small>전체 비교</small>
+        </div>
+        <div>
+          <dt>QUALIFIED</dt>
+          <dd id="discovery-qualified" class="mono">—</dd>
+          <small>기준 통과</small>
+        </div>
+        <div>
+          <dt>SHORTLIST</dt>
+          <dd id="discovery-shortlist" class="mono">—</dd>
+          <small>화면 후보</small>
+        </div>
+      </dl>
+
+      <aside class="method-note">
+        <span class="method-note__mark" aria-hidden="true">!</span>
+        <div>
+          <strong>1차 결과의 범위</strong>
+          <p>가격, 추세, 변동성과 거래량을 비교합니다. 기업 가치와 최신 이슈는 다음 단계에서 검증합니다.</p>
+        </div>
+      </aside>
+    </article>
+
+    <section class="surface candidate-board" aria-labelledby="candidate-board-title">
+      <div class="section-heading">
+        <div>
+          <p class="section-code">SHORTLIST RACK</p>
+          <h2 id="candidate-board-title">심층검토 후보</h2>
+        </div>
+        <strong id="discovery-selection" class="selection-counter" aria-live="polite">0 / 3 SELECTED</strong>
+      </div>
+      <form id="discovery-analyze-form">
+        <ol id="discovery-candidate-list" class="candidate-list" aria-label="심층 분석 후보 선택">
+          <li class="empty-state">
+            <strong>선별 결과가 없습니다.</strong>
+            <span>왼쪽에서 전략을 선택하고 후보를 스캔하세요.</span>
+          </li>
+        </ol>
+        <div class="candidate-board__footer">
+          <p>비교할 종목을 최대 세 개 선택하세요. 분석 결과는 각 종목별로 저장됩니다.</p>
+          <button id="discovery-analyze" class="button button--primary" type="submit" disabled>
+            선택 종목 심층 분석
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <section class="surface discovery-run-board" aria-labelledby="discovery-run-title">
+      <div class="section-heading">
+        <div>
+          <p class="section-code">DELEGATION BOARD</p>
+          <h2 id="discovery-run-title">종목별 분석 진행</h2>
+        </div>
+        <a class="text-link" href="/history?workflow=discovery">추천 이력 보기 <span aria-hidden="true">→</span></a>
+      </div>
+      <p id="discovery-run-feedback" class="form-feedback" role="status" aria-live="polite">
+        심층 분석을 시작하면 종목별 진행 상태가 표시됩니다.
+      </p>
+      <ol id="discovery-run-list" class="discovery-run-list" aria-label="추천 종목 심층 분석 실행">
+        <li class="empty-state empty-state--compact">배정된 심층 분석이 없습니다.</li>
+      </ol>
+    </section>
+  </section>
+{% endblock %}
+
+{% block scripts %}
+  <script type="module" src="/static/discovery.js?v=1"></script>
+{% endblock %}

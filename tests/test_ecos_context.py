@@ -15,7 +15,10 @@ from investment_office.services.ecos_context import (
     ECOS_STATISTIC_SEARCH_URL,
     EcosMacroContextClient,
 )
-from investment_office.services.research_contracts import SectionStatus
+from investment_office.services.research_contracts import (
+    PublicationTimeBasis,
+    SectionStatus,
+)
 
 COLLECTED_AT = datetime(2026, 7, 12, 9, 30, tzinfo=UTC)
 API_KEY = "secretKey123"
@@ -153,6 +156,10 @@ async def test_fetch_uses_verified_codes_and_builds_complete_official_section() 
     assert facts["macro:ecos:kr_gov_10y:level"].unit == "percent"
     assert facts["macro:ecos:usd_krw:level"].currency == "KRW"
     assert facts["macro:ecos:cpi:level"].observed_at == datetime(2026, 6, 30, tzinfo=UTC)
+    assert (
+        facts["macro:ecos:cpi:level"].publication_time_basis
+        is PublicationTimeBasis.OBSERVATION_DATE_PROXY
+    )
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ from pydantic import AnyHttpUrl
 
 from investment_office.services.research_contracts import (
     Fact,
+    PublicationTimeBasis,
     ResearchSection,
     SectionStatus,
     SourceRef,
@@ -253,8 +254,9 @@ class EcosMacroContextClient:
             unit=spec.unit,
             currency=spec.currency,
             observed_at=_at_utc_midnight(observation.observed_on),
-            published_at=collected_at,
+            published_at=_at_utc_midnight(observation.observed_on),
             collected_at=collected_at,
+            publication_time_basis=PublicationTimeBasis.OBSERVATION_DATE_PROXY,
         )
         max_age = self._monthly_max_age if spec.cycle == "M" else self._daily_max_age
         age = collected_at - fact.observed_at

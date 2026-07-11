@@ -34,7 +34,8 @@ from investment_office.services.instrument_identity import (
     resolve_stored_instrument,
 )
 from investment_office.services.market_data import EODSnapshot
-from investment_office.services.research_contracts import MarketId
+from investment_office.services.research_contracts import InstrumentRef, MarketId
+from investment_office.services.research_pipeline import ResearchPipelineResult
 from investment_office.services.risk import RiskAssessment, assess_risk
 from investment_office.storage import Storage
 
@@ -63,6 +64,14 @@ class EODMarketDataClient(Protocol):
     async def fetch_eod_snapshot(self, ticker: str) -> EODSnapshot: ...
 
 
+class ResearchDataClient(Protocol):
+    async def collect(
+        self,
+        instrument: InstrumentRef,
+        snapshot: EODSnapshot,
+    ) -> ResearchPipelineResult: ...
+
+
 RiskFunction = Callable[[EODSnapshot, dict[str, Any]], RiskAssessment]
 
 
@@ -82,6 +91,7 @@ class InvestmentCommittee:
         broker: EventBroker,
         max_parallel_agents: int = 3,
         risk_function: RiskFunction = assess_risk,
+        research_data: ResearchDataClient | None = None,
     ) -> None:
         self.storage = storage
         self.provider = provider
@@ -89,6 +99,7 @@ class InvestmentCommittee:
         self.broker = broker
         self._semaphore = asyncio.Semaphore(max_parallel_agents)
         self._risk_function = risk_function
+        self.research_data = research_data
 
     async def create_analysis(
         self,
@@ -229,6 +240,35 @@ class InvestmentCommittee:
                 instrument.storage_ticker
             )
             market_payload = market_snapshot.model_dump(mode="json")
+            market_payload.update(
+                {
+                    "market": instrument.market.value,
+                    "canonical_id": instrument.canonical_id,
+                    "local_symbol": instrument.symbol,
+                }
+            )
+            if self.research_data is not None:
+                research_instrument = InstrumentRef(
+                    market=instrument.market,
+                    symbol=instrument.symbol,
+                    exchange=market_snapshot.exchange,
+                    currency=market_snapshot.currency,
+                )
+                research = await self.research_data.collect(
+                    research_instrument,
+                    market_snapshot,
+                )
+                market_payload.update(
+                    {
+                        "research_bundle": research.bundle.model_dump(mode="json"),
+                        "research_quality": research.bundle.quality.model_dump(mode="json"),
+                        "market_regime": research.regime.model_dump(mode="json"),
+                        "fundamentals": research.fundamentals,
+                        "news": research.news,
+                        "macro": research.macro,
+                        "observation_cutoff": research.observation_cutoff.isoformat(),
+                    }
+                )
             self.storage.save_snapshot(
                 Snapshot(
                     candidate_id=candidate.id,
@@ -269,6 +309,10 @@ class InvestmentCommittee:
                 chairman_payload,
                 risk_payload,
             )
+            risk_payload = self._apply_research_risk_gates(
+                risk_payload,
+                market_payload,
+            )
             missing_required_roles = [
                 role
                 for role in (AgentRole.FUNDAMENTAL, AgentRole.NEWS)
@@ -308,7 +352,13 @@ class InvestmentCommittee:
             )
             self.storage.save_agent_output(risk_output)
 
-            decision = self._build_decision(candidate, chairman_payload, risk_payload)
+            decision = self._build_decision(
+                candidate,
+                chairman_payload,
+                risk_payload,
+                research_quality=market_payload.get("research_quality"),
+                market_regime=market_payload.get("market_regime"),
+            )
             self.storage.save_snapshot(
                 Snapshot(
                     candidate_id=candidate.id,
@@ -640,6 +690,88 @@ class InvestmentCommittee:
         return not isinstance(value, (dict, list)) or not value
 
     @staticmethod
+    def _apply_research_risk_gates(
+        risk: dict[str, Any],
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        warnings = [
+            str(item)
+            for item in risk.get("warnings", [])
+            if isinstance(item, str) and item.strip()
+        ]
+        data_gaps = [
+            str(item)
+            for item in risk.get("data_gaps", [])
+            if isinstance(item, str) and item.strip()
+        ]
+        blocked = False
+
+        quality = snapshot.get("research_quality")
+        if isinstance(quality, dict):
+            quality_warnings = quality.get("warnings", [])
+            if isinstance(quality_warnings, list):
+                warnings.extend(
+                    str(item)
+                    for item in quality_warnings
+                    if isinstance(item, str) and item.strip()
+                )
+            if quality.get("analysis_eligible") is not True:
+                raw_reasons = quality.get("blocking_reasons", [])
+                reasons = (
+                    [
+                        str(item)
+                        for item in raw_reasons
+                        if isinstance(item, str) and item.strip()
+                    ]
+                    if isinstance(raw_reasons, list)
+                    else []
+                )
+                if not reasons:
+                    reasons = ["필수 연구 자료 품질 기준을 충족하지 못했습니다."]
+                data_gaps.extend(reasons)
+                warnings.append("연구 자료 품질 게이트가 신규 포지션을 차단했습니다.")
+                blocked = True
+
+        regime = snapshot.get("market_regime")
+        if isinstance(regime, dict):
+            regime_warnings = regime.get("warnings", [])
+            if isinstance(regime_warnings, list):
+                warnings.extend(
+                    str(item)
+                    for item in regime_warnings
+                    if isinstance(item, str) and item.strip()
+                )
+            raw_multiplier = regime.get("position_cap_multiplier")
+            if (
+                isinstance(raw_multiplier, (int, float))
+                and not isinstance(raw_multiplier, bool)
+                and 0 <= float(raw_multiplier) <= 1
+            ):
+                multiplier = float(raw_multiplier)
+                raw_cap = risk.get("position_cap_pct")
+                if (
+                    risk.get("eligible") is True
+                    and isinstance(raw_cap, (int, float))
+                    and not isinstance(raw_cap, bool)
+                ):
+                    risk["position_cap_pct"] = round(float(raw_cap) * multiplier, 6)
+                    if multiplier < 1:
+                        warnings.append(
+                            f"시장 국면에 따라 포지션 상한을 {multiplier:.2f}배로 축소했습니다."
+                        )
+                    if risk["position_cap_pct"] <= 0:
+                        blocked = True
+
+        if blocked:
+            if str(risk.get("action", "")).strip().casefold() == "size_position":
+                risk["action"] = "watch"
+            risk["eligible"] = False
+            risk["position_cap_pct"] = 0.0
+        risk["warnings"] = list(dict.fromkeys(warnings))
+        risk["data_gaps"] = list(dict.fromkeys(data_gaps))
+        return risk
+
+    @staticmethod
     def _data_gap_result(role: AgentRole, ticker: str) -> dict[str, Any]:
         source_name = "재무·공시" if role is AgentRole.FUNDAMENTAL else "뉴스"
         data_gap = f"검증 가능한 {source_name} 원문과 출처가 입력되지 않았습니다."
@@ -736,6 +868,9 @@ class InvestmentCommittee:
         candidate: Candidate,
         chairman: dict[str, Any],
         risk: dict[str, Any],
+        *,
+        research_quality: object = None,
+        market_regime: object = None,
     ) -> dict[str, Any]:
         instrument = InvestmentCommittee._candidate_instrument(candidate)
         stance = str(chairman.get("stance", "neutral"))
@@ -788,6 +923,8 @@ class InvestmentCommittee:
             "risk_plan": risk,
             "risk_eligible": risk_eligible,
             "position_cap_pct": position_cap_pct,
+            "research_quality": research_quality,
+            "market_regime": market_regime,
             "human_approval_required": True,
             "auto_trade": False,
         }

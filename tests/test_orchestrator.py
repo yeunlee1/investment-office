@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, date, datetime
 from typing import Any, cast
 from uuid import uuid4
 
 import pytest
-from pydantic import BaseModel
+from pydantic import AnyHttpUrl, BaseModel
 
 from investment_office.domain import (
     AgentOutput,
@@ -22,18 +23,36 @@ from investment_office.domain import (
 )
 from investment_office.services.event_broker import EventBroker
 from investment_office.services.market_data import YahooFinanceClient
+from investment_office.services.market_regime import (
+    MarketRegime,
+    MarketRegimeAssessment,
+    RegimeState,
+)
 from investment_office.services.orchestrator import (
     DISCOVERY_ANALYSIS_THESIS,
     AnalysisProvider,
     AnalysisRunConflictError,
     InvestmentCommittee,
+    ResearchDataClient,
     RiskFunction,
 )
+from investment_office.services.research_contracts import (
+    AnalysisInputBundle,
+    DataQualityReport,
+    Fact,
+    InstrumentRef,
+    ResearchSection,
+    SectionStatus,
+    SourceRef,
+    SourceTier,
+)
+from investment_office.services.research_pipeline import ResearchPipelineResult
 from investment_office.storage import InMemoryStorage
 
 
 class FakeSnapshot(BaseModel):
     ticker: str = "AAPL"
+    exchange: str = "NMS"
     as_of: str = "2026-07-10"
     close: float = 215.0
     previous_close: float = 212.0
@@ -58,6 +77,99 @@ class FakeMarketData:
         if self.error is not None:
             raise self.error
         return FakeSnapshot(ticker=ticker)
+
+
+class FakeResearchData:
+    def __init__(self) -> None:
+        self.calls: list[InstrumentRef] = []
+
+    async def collect(
+        self,
+        instrument: InstrumentRef,
+        snapshot: Any,
+    ) -> ResearchPipelineResult:
+        self.calls.append(instrument)
+        collected_at = datetime(2026, 7, 12, 9, 30, tzinfo=UTC)
+        observed_at = datetime(2026, 7, 10, tzinfo=UTC)
+        source = SourceRef(
+            source_id="test:research:source",
+            name="고정 연구 자료",
+            tier=SourceTier.FALLBACK,
+            url=AnyHttpUrl(snapshot.source_url),
+            retrieved_at=collected_at,
+        )
+        facts = tuple(
+            Fact(
+                fact_id=fact_id,
+                source_id=source.source_id,
+                metric=metric,
+                value=value,
+                unit=unit,
+                observed_at=observed_at,
+                published_at=observed_at,
+                collected_at=collected_at,
+                instrument=instrument,
+            )
+            for fact_id, metric, value, unit in (
+                ("test:fundamental:revenue", "매출", 100.0, "currency"),
+                ("test:news:filing", "공시", "10-Q", "form"),
+                ("test:macro:vix", "VIX 종가", 17.0, "index_point"),
+            )
+        )
+        sections = tuple(
+            ResearchSection(
+                section_id=section_id,
+                title=title,
+                status=SectionStatus.COMPLETE,
+                fact_ids=(fact.fact_id,),
+            )
+            for section_id, title, fact in (
+                ("company.fundamental", "공식 재무", facts[0]),
+                ("company.official_news", "공식 공시", facts[1]),
+                ("macro.volatility", "시장 변동성", facts[2]),
+            )
+        )
+        quality = DataQualityReport(
+            generated_at=collected_at,
+            analysis_eligible=True,
+        )
+        bundle = AnalysisInputBundle(
+            cutoff=collected_at,
+            market_session=date(2026, 7, 10),
+            instrument=instrument,
+            sources=(source,),
+            facts=facts,
+            sections=sections,
+            quality=quality,
+        )
+        regime = MarketRegimeAssessment(
+            market=instrument.market,
+            regime=MarketRegime(
+                rates=RegimeState.NEUTRAL,
+                currency=RegimeState.NEUTRAL,
+                volatility=RegimeState.NEUTRAL,
+                commodities=RegimeState.NEUTRAL,
+                liquidity=RegimeState.NEUTRAL,
+            ),
+            confidence=1,
+            evidence_fact_ids=(facts[2].fact_id,),
+            warnings=(),
+            position_cap_multiplier=0.5,
+        )
+
+        def agent_fact(fact: Fact) -> dict[str, object]:
+            payload = cast(dict[str, object], fact.model_dump(mode="json"))
+            payload["source_url"] = str(source.url)
+            return payload
+
+        return ResearchPipelineResult(
+            bundle=bundle,
+            regime=regime,
+            fundamentals=[agent_fact(facts[0])],
+            news=[agent_fact(facts[1])],
+            macro=[agent_fact(facts[2])],
+            observation_cutoff=collected_at,
+        )
 
 
 class FakeProvider:
@@ -146,6 +258,7 @@ def make_committee(
     market_data: FakeMarketData | None = None,
     storage: InMemoryStorage | None = None,
     risk_function: RiskFunction | None = None,
+    research_data: FakeResearchData | None = None,
 ) -> tuple[InvestmentCommittee, InMemoryStorage, FakeProvider, FakeMarketData]:
     resolved_storage = storage or InMemoryStorage()
     resolved_provider = provider or FakeProvider()
@@ -157,6 +270,7 @@ def make_committee(
         broker=EventBroker(),
         max_parallel_agents=3,
         risk_function=risk_function or cast(RiskFunction, fake_risk),
+        research_data=cast(ResearchDataClient, research_data) if research_data else None,
     )
     return committee, resolved_storage, resolved_provider, resolved_market
 
@@ -310,6 +424,61 @@ async def test_six_agent_analysis_then_human_review_state(
     assert reviewed["human_review"]["decision"] == decision.value
     last_event = storage.list_events(analysis_run_id=run.id)[-1]
     assert last_event.event_type is EventType.HUMAN_REVIEW_RECORDED
+
+
+@pytest.mark.asyncio
+async def test_research_bundle_runs_all_roles_and_applies_regime_cap() -> None:
+    research = FakeResearchData()
+    committee, storage, provider, _ = make_committee(research_data=research)
+    run = await committee.create_analysis("AAPL")
+
+    await committee.run_analysis(run.id)
+
+    assert [item.symbol for item in research.calls] == ["AAPL"]
+    assert {role for role, _, _ in provider.calls} == {
+        "fundamental",
+        "technical",
+        "news",
+        "bull",
+        "bear",
+        "head_trader",
+    }
+    market_snapshot = storage.list_snapshots(run.id, kind=SnapshotKind.MARKET_DATA)[0]
+    assert market_snapshot.data["research_quality"]["analysis_eligible"] is True
+    decision = committee.build_run_payload(run.id)["decision"]
+    assert decision["risk_eligible"] is True
+    assert decision["position_cap_pct"] == 2.0
+    assert decision["market_regime"]["position_cap_multiplier"] == 0.5
+    assert decision["research_quality"]["analysis_eligible"] is True
+
+
+def test_research_quality_gate_blocks_positive_risk_result() -> None:
+    risk = {
+        "action": "size_position",
+        "eligible": True,
+        "position_cap_pct": 4.0,
+        "warnings": [],
+        "data_gaps": [],
+    }
+    snapshot = {
+        "research_quality": {
+            "analysis_eligible": False,
+            "blocking_reasons": ["공식 재무제표가 없습니다."],
+            "warnings": ["독립 뉴스 공급원이 없습니다."],
+        },
+        "market_regime": {
+            "position_cap_multiplier": 0.5,
+            "warnings": ["변동성 축을 확인할 수 없습니다."],
+        },
+    }
+
+    gated = InvestmentCommittee._apply_research_risk_gates(risk, snapshot)
+
+    assert gated["action"] == "watch"
+    assert gated["eligible"] is False
+    assert gated["position_cap_pct"] == 0.0
+    assert gated["data_gaps"] == ["공식 재무제표가 없습니다."]
+    assert "연구 자료 품질 게이트가 신규 포지션을 차단했습니다." in gated["warnings"]
 
 
 @pytest.mark.asyncio

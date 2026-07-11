@@ -47,6 +47,7 @@ from investment_office.services.committee_broker import (
     CommitteeNotFoundError,
     CommitteeValidationError,
 )
+from investment_office.services.company_research import OfficialCompanyResearchClient
 from investment_office.services.decision_archive import (
     DecisionArchiveNotFoundError,
     DecisionArchiveService,
@@ -56,17 +57,21 @@ from investment_office.services.instrument_identity import (
     normalize_instrument,
     resolve_stored_instrument,
 )
+from investment_office.services.macro_context import FredMacroContextClient
 from investment_office.services.market_data import YahooFinanceClient
+from investment_office.services.market_overview import MarketOverviewService
 from investment_office.services.orchestrator import (
     DISCOVERY_ANALYSIS_THESIS,
     AnalysisProvider,
     AnalysisRunConflictError,
     EODMarketDataClient,
     InvestmentCommittee,
+    ResearchDataClient,
     RiskFunction,
 )
 from investment_office.services.price_gateway import build_default_committee_price_gateway
 from investment_office.services.research_contracts import MarketId
+from investment_office.services.research_pipeline import ResearchPipeline
 from investment_office.services.risk import assess_risk
 from investment_office.services.scheduled_analysis import (
     ScheduledAnalysis,
@@ -250,6 +255,8 @@ def create_app(
     storage: Storage | None = None,
     provider: AnalysisProvider | None = None,
     market_data: EODMarketDataClient | None = None,
+    research_data: ResearchDataClient | None = None,
+    market_overview_service: MarketOverviewService | None = None,
     risk_function: RiskFunction = assess_risk,
 ) -> FastAPI:
     """운영 의존성 또는 테스트 대역으로 애플리케이션을 구성한다."""
@@ -271,10 +278,29 @@ def create_app(
             yahoo_client=YahooFinanceClient(
                 timeout_seconds=resolved_settings.market_data_timeout_seconds
             ),
+            tiingo_api_token=resolved_settings.tiingo_api_token,
             korea_service_key=resolved_settings.data_go_kr_service_key,
             timeout_seconds=resolved_settings.market_data_timeout_seconds,
         )
+        resolved_research = research_data
+        if resolved_research is None and provider is None and market_data is None:
+            resolved_research = ResearchPipeline(
+                macro_client=FredMacroContextClient(
+                    timeout_seconds=resolved_settings.market_data_timeout_seconds
+                ),
+                company_client=OfficialCompanyResearchClient(
+                    sec_user_agent=resolved_settings.sec_user_agent,
+                    dart_api_key=resolved_settings.dart_api_key,
+                    timeout_seconds=resolved_settings.market_data_timeout_seconds,
+                ),
+                ecos_api_key=resolved_settings.bok_ecos_api_key,
+            )
         broker = EventBroker()
+        resolved_market_overview = market_overview_service
+        if resolved_market_overview is None and isinstance(
+            resolved_research, ResearchPipeline
+        ):
+            resolved_market_overview = MarketOverviewService(resolved_research)
         app.state.committee = InvestmentCommittee(
             storage=resolved_storage,
             provider=resolved_provider,
@@ -282,7 +308,10 @@ def create_app(
             broker=broker,
             max_parallel_agents=resolved_settings.max_parallel_agents,
             risk_function=risk_function,
+            research_data=resolved_research,
         )
+        app.state.research_pipeline = resolved_research
+        app.state.market_overview = resolved_market_overview
         app.state.work_items = WorkItemService(
             storage=resolved_storage,
             provider=resolved_provider,
@@ -648,6 +677,10 @@ def create_app(
     async def analysis_page(request: Request) -> HTMLResponse:
         return templates.TemplateResponse(request=request, name="analysis.html", context={})
 
+    @app.get("/markets", response_class=HTMLResponse)
+    async def markets_page(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(request=request, name="markets.html", context={})
+
     @app.get("/discovery", response_class=HTMLResponse)
     async def discovery_page(request: Request) -> HTMLResponse:
         return templates.TemplateResponse(request=request, name="discovery.html", context={})
@@ -750,6 +783,19 @@ def create_app(
                 }
             )
         return {"sources": sources}
+
+    @app.get("/api/markets/overview")
+    async def api_markets_overview(request: Request) -> dict[str, Any]:
+        """공통 거시와 미국·한국 시장 국면을 같은 수집 근거로 반환한다."""
+
+        service = cast(MarketOverviewService | None, request.app.state.market_overview)
+        if service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="시장 개요 수집기가 구성되지 않았습니다.",
+            )
+        overview = await service.build()
+        return overview.model_dump(mode="json")
 
     @app.post("/api/analyze", status_code=status.HTTP_202_ACCEPTED)
     async def api_analyze(payload: AnalyzeRequest, request: Request) -> dict[str, Any]:

@@ -27,6 +27,7 @@ from investment_office.domain import (
 )
 from investment_office.main import _log_background_task_failure, create_app
 from investment_office.services.market_data import YahooFinanceClient
+from investment_office.services.market_overview import MarketOverviewService
 from investment_office.services.orchestrator import AnalysisProvider, RiskFunction
 from investment_office.storage import InMemoryStorage
 
@@ -65,6 +66,45 @@ class FakeRiskResult(BaseModel):
     eligible: bool = True
     position_cap_pct: float = 3.0
     warnings: list[str] = ["최종 주문은 사람이 별도로 판단한다."]
+
+
+class FakeOverviewResult(BaseModel):
+    generated_at: datetime = datetime(2026, 7, 12, tzinfo=UTC)
+    common: dict[str, Any] = {
+        "status": "ready",
+        "facts": [],
+        "sections": [],
+        "warnings": [],
+    }
+    markets: dict[str, Any] = {
+        market: {
+            "market": market,
+            "label": label,
+            "regime": {
+                "rates": "unknown",
+                "currency": "unknown",
+                "volatility": "unknown",
+                "commodities": "unknown",
+                "liquidity": "unknown",
+            },
+            "confidence": 0,
+            "position_cap_multiplier": 0.25,
+            "warnings": [],
+            "data_quality": {
+                "analysis_eligible": False,
+                "blocking_reasons": ["고정 시험 자료입니다."],
+                "warnings": [],
+                "stale_fact_ids": [],
+                "blocked_section_ids": [],
+            },
+        }
+        for market, label in (("us", "미국 시장"), ("kr", "한국 시장"))
+    }
+
+
+class FakeMarketOverviewService:
+    async def build(self) -> FakeOverviewResult:
+        return FakeOverviewResult()
 
 
 class FakeMarketData:
@@ -144,6 +184,10 @@ def make_app(*, storage: InMemoryStorage | None = None) -> tuple[FastAPI, FakeMa
         storage=storage or InMemoryStorage(),
         provider=cast(AnalysisProvider, FakeProvider()),
         market_data=cast(YahooFinanceClient, market),
+        market_overview_service=cast(
+            MarketOverviewService,
+            FakeMarketOverviewService(),
+        ),
         risk_function=cast(RiskFunction, fake_risk),
     )
     return app, market
@@ -697,6 +741,12 @@ async def test_api_accepts_explicit_korean_market_and_keeps_markets_separate() -
             assert by_id["data_go_kr"]["status"]["analysis_ready"] is False
             assert by_id["reuters"]["status"]["analysis_ready"] is False
 
+            overview_response = await client.get("/api/markets/overview")
+            assert overview_response.status_code == 200
+            overview = overview_response.json()
+            assert set(overview["markets"]) == {"us", "kr"}
+            assert overview["common"]["status"] == "ready"
+
 
 @pytest.mark.asyncio
 async def test_run_list_filters_ui_status_and_returns_unlimited_summary() -> None:
@@ -773,6 +823,7 @@ def test_analysis_site_routes_use_separate_templates() -> None:
     }
 
     assert routes["/analysis"] == "analysis_page"
+    assert routes["/markets"] == "markets_page"
     assert routes["/discovery"] == "discovery_page"
     assert routes["/history"] == "history_page"
 
@@ -785,14 +836,18 @@ async def test_site_navigation_replaces_game_entry_while_office_stays_available(
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
             landing = await client.get("/")
+            markets = await client.get("/markets")
             office = await client.get("/office")
 
     assert landing.status_code == 200
     assert 'href="/analysis"' in landing.text
+    assert 'href="/markets"' in landing.text
     assert 'href="/discovery"' in landing.text
     assert 'href="/history"' in landing.text
     assert 'href="/office"' not in landing.text
     assert office.status_code == 200
+    assert markets.status_code == 200
+    assert 'id="markets-refresh"' in markets.text
     assert "<canvas" in office.text
     assert 'id="office-canvas"' in office.text
     assert 'src="/static/office.js?v=8"' in office.text

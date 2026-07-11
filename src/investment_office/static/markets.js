@@ -50,6 +50,7 @@ const REGIME_LABELS = Object.freeze({
 });
 
 const SECTION_LABELS = Object.freeze({
+  ready: "준비 완료",
   complete: "완료",
   partial: "부분 수집",
   unavailable: "수집 불가",

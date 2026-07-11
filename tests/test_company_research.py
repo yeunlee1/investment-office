@@ -227,8 +227,9 @@ async def test_sec_collects_cutoff_safe_financials_and_recent_filing_metadata() 
     )
     assert fundamental.status is SectionStatus.COMPLETE
     assert len(fundamental.fact_ids) == 9
-    assert official_news.status is SectionStatus.COMPLETE
+    assert official_news.status is SectionStatus.PARTIAL
     assert len(official_news.fact_ids) == 3
+    assert any("메타데이터" in gap for gap in official_news.data_gaps)
     revenue = next(fact for fact in result.facts if fact.fact_id == "sec:aapl:revenue")
     assert revenue.value == 1000
     assert revenue.published_at <= NOW
@@ -296,8 +297,9 @@ async def test_dart_calls_official_contracts_and_collects_only_metadata() -> Non
     )
     assert fundamental.status is SectionStatus.COMPLETE
     assert len(fundamental.fact_ids) == 9
-    assert official_news.status is SectionStatus.COMPLETE
+    assert official_news.status is SectionStatus.PARTIAL
     assert len(official_news.fact_ids) == 1
+    assert any("메타데이터" in gap for gap in official_news.data_gaps)
     capex = next(fact for fact in result.facts if fact.fact_id.endswith(":capital_expenditure"))
     assert capex.value == -75_000
     disclosure = next(fact for fact in result.facts if ":filing:" in fact.fact_id)

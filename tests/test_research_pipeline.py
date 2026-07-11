@@ -351,7 +351,7 @@ def _ecos_result() -> EcosContextResult:
 
 
 @pytest.mark.asyncio
-async def test_collect_builds_complete_bundle_and_agent_inputs_without_optional_blocking() -> None:
+async def test_collect_blocks_metadata_only_and_missing_independent_news() -> None:
     instrument = _instrument()
     macro_client = _MacroClient(_macro_result())
     pipeline = ResearchPipeline(
@@ -363,17 +363,22 @@ async def test_collect_builds_complete_bundle_and_agent_inputs_without_optional_
 
     result = await pipeline.collect(instrument, _snapshot(), as_of=COLLECTED_AT)
 
-    assert result.bundle.quality.analysis_eligible is True
-    assert result.bundle.quality.blocked_section_ids == ()
+    assert result.bundle.quality.analysis_eligible is False
+    assert set(result.bundle.quality.blocked_section_ids) >= {
+        "company.official_news",
+        INDEPENDENT_NEWS_SECTION_ID,
+    }
     assert len({source.source_id for source in result.bundle.sources}) == len(result.bundle.sources)
     assert len({fact.fact_id for fact in result.bundle.facts}) == len(result.bundle.facts)
-    assert result.fundamentals and result.news and result.macro
-    assert all("source_url" in item for item in result.fundamentals + result.news + result.macro)
+    assert result.fundamentals and result.news == [] and result.macro
+    assert all("source_url" in item for item in result.fundamentals + result.macro)
     sections = {section.section_id: section for section in result.bundle.sections}
     assert sections[VALUATION_SECTION_ID].required is False
     assert sections[VALUATION_SECTION_ID].status is SectionStatus.UNAVAILABLE
-    assert sections[INDEPENDENT_NEWS_SECTION_ID].required is False
-    assert any("독립 언론" in warning for warning in result.bundle.quality.warnings)
+    assert sections["company.official_news"].status is SectionStatus.PARTIAL
+    assert sections[INDEPENDENT_NEWS_SECTION_ID].required is True
+    assert sections[INDEPENDENT_NEWS_SECTION_ID].status is SectionStatus.UNAVAILABLE
+    assert any("독립 언론" in reason for reason in result.bundle.quality.blocking_reasons)
     assert result.regime.confidence == 1
     assert result.regime.regime.volatility is RegimeState.FAVORABLE
 
@@ -415,7 +420,7 @@ async def test_partial_provider_failure_is_parallel_and_becomes_explicit_section
     assert sections["macro.rates"].status is SectionStatus.UNAVAILABLE
     assert "macro.rates" in result.bundle.quality.blocked_section_ids
     assert result.bundle.quality.analysis_eligible is False
-    assert result.fundamentals and result.news
+    assert result.fundamentals and result.news == []
     assert result.macro == []
     assert result.regime.confidence == 0
 
@@ -477,6 +482,180 @@ async def test_single_source_roe_and_roa_are_derived_without_inventing_per_or_pb
 
 
 @pytest.mark.asyncio
+async def test_actual_company_metric_names_produce_labeled_roe_roa_proxies() -> None:
+    instrument = _instrument()
+    company = _company_result(instrument)
+    source_id = company.sources[0].source_id
+    inputs = (
+        _fact(
+            "company:reported_income",
+            source_id,
+            "최근 공시 기준 순이익",
+            150,
+            "currency",
+            instrument,
+        ),
+        _fact(
+            "company:reported_equity",
+            source_id,
+            "최근 공시 기준 자본",
+            800,
+            "currency",
+            instrument,
+        ),
+        _fact(
+            "company:reported_assets",
+            source_id,
+            "최근 공시 기준 자산",
+            2_000,
+            "currency",
+            instrument,
+        ),
+    )
+    fundamental = company.sections[0].model_copy(
+        update={"fact_ids": (*company.sections[0].fact_ids, *(fact.fact_id for fact in inputs))}
+    )
+    company = CompanyResearchResult(
+        sources=company.sources,
+        facts=(*company.facts, *inputs),
+        sections=(fundamental, company.sections[1]),
+    )
+    pipeline = ResearchPipeline(
+        macro_client=_MacroClient(_macro_result()),
+        company_client=_CompanyClient(company),
+        now_factory=lambda: COLLECTED_AT,
+    )
+
+    result = await pipeline.collect(instrument, _snapshot())
+
+    valuation = next(
+        section for section in result.bundle.sections if section.section_id == VALUATION_SECTION_ID
+    )
+    valuation_facts = [fact for fact in result.bundle.facts if fact.fact_id in valuation.fact_ids]
+    assert {(fact.metric, fact.value) for fact in valuation_facts} == {
+        ("ROE", 18.75),
+        ("ROA", 7.5),
+    }
+    assert valuation.status is SectionStatus.PARTIAL
+    assert any("참고 비율" in gap for gap in valuation.data_gaps)
+
+
+@pytest.mark.asyncio
+async def test_stale_required_company_facts_are_blocked_and_reported() -> None:
+    instrument = _instrument()
+    company = _company_result(instrument)
+    stale_observed = datetime(2024, 12, 31, tzinfo=UTC)
+    stale_published = datetime(2025, 1, 31, tzinfo=UTC)
+    stale_facts = tuple(
+        fact.model_copy(update={"observed_at": stale_observed, "published_at": stale_published})
+        for fact in company.facts
+    )
+    company = CompanyResearchResult(
+        sources=company.sources,
+        facts=stale_facts,
+        sections=company.sections,
+    )
+    pipeline = ResearchPipeline(
+        macro_client=_MacroClient(_macro_result()),
+        company_client=_CompanyClient(company),
+        now_factory=lambda: COLLECTED_AT,
+    )
+
+    result = await pipeline.collect(instrument, _snapshot())
+
+    sections = {section.section_id: section for section in result.bundle.sections}
+    stale_ids = {fact.fact_id for fact in stale_facts}
+    assert set(result.bundle.quality.stale_fact_ids) >= stale_ids
+    assert sections["company.fundamental"].status is SectionStatus.BLOCKED
+    assert sections["company.official_news"].status is SectionStatus.BLOCKED
+    assert result.bundle.quality.analysis_eligible is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_section_id", ["company.fundamental", "company.official_news"])
+async def test_missing_required_company_section_never_fails_open(
+    missing_section_id: str,
+) -> None:
+    instrument = _instrument()
+    company = _company_result(instrument)
+    company = CompanyResearchResult(
+        sources=company.sources,
+        facts=company.facts,
+        sections=tuple(
+            section for section in company.sections if section.section_id != missing_section_id
+        ),
+    )
+    pipeline = ResearchPipeline(
+        macro_client=_MacroClient(_macro_result()),
+        company_client=_CompanyClient(company),
+        now_factory=lambda: COLLECTED_AT,
+    )
+
+    result = await pipeline.collect(instrument, _snapshot())
+
+    assert missing_section_id in result.bundle.quality.missing_required_sections
+    assert result.bundle.quality.analysis_eligible is False
+
+
+@pytest.mark.asyncio
+async def test_provider_cannot_downgrade_required_company_section_to_optional() -> None:
+    instrument = _instrument()
+    company = _company_result(instrument)
+    optional_fundamental = company.sections[0].model_copy(update={"required": False})
+    company = CompanyResearchResult(
+        sources=company.sources,
+        facts=company.facts,
+        sections=(optional_fundamental, company.sections[1]),
+    )
+    pipeline = ResearchPipeline(
+        macro_client=_MacroClient(_macro_result()),
+        company_client=_CompanyClient(company),
+        now_factory=lambda: COLLECTED_AT,
+    )
+
+    result = await pipeline.collect(instrument, _snapshot())
+
+    fundamental = next(
+        section for section in result.bundle.sections if section.section_id == "company.fundamental"
+    )
+    assert fundamental.required is True
+
+
+@pytest.mark.asyncio
+async def test_company_fact_published_after_observation_cutoff_is_excluded() -> None:
+    instrument = _instrument()
+    company = _company_result(instrument)
+    future_time = datetime(2026, 7, 13, tzinfo=UTC)
+    future_fundamental = company.facts[0].model_copy(
+        update={
+            "observed_at": future_time,
+            "published_at": future_time,
+            "collected_at": future_time,
+        }
+    )
+    company = CompanyResearchResult(
+        sources=company.sources,
+        facts=(future_fundamental, company.facts[1]),
+        sections=company.sections,
+    )
+    pipeline = ResearchPipeline(
+        macro_client=_MacroClient(_macro_result()),
+        company_client=_CompanyClient(company),
+        now_factory=lambda: COLLECTED_AT,
+    )
+
+    result = await pipeline.collect(instrument, _snapshot(), cutoff=COLLECTED_AT)
+
+    fact_ids = {fact.fact_id for fact in result.bundle.facts}
+    fundamental = next(
+        section for section in result.bundle.sections if section.section_id == "company.fundamental"
+    )
+    assert future_fundamental.fact_id not in fact_ids
+    assert fundamental.status is SectionStatus.BLOCKED
+    assert result.bundle.quality.analysis_eligible is False
+
+
+@pytest.mark.asyncio
 async def test_korean_missing_ecos_and_optional_price_limits_do_not_block_core_price() -> None:
     instrument = _instrument(MarketId.KR)
     historical_cutoff = datetime(2026, 7, 10, 23, 59, tzinfo=UTC)
@@ -506,7 +685,11 @@ async def test_korean_missing_ecos_and_optional_price_limits_do_not_block_core_p
     assert sections[PRICE_TECHNICAL_SECTION_ID].status is SectionStatus.PARTIAL
     assert sections[PRICE_TECHNICAL_SECTION_ID].required is False
     assert sections["macro.kr.ecos"].status is SectionStatus.UNAVAILABLE
-    assert result.bundle.quality.blocked_section_ids == ("macro.kr.ecos",)
+    assert set(result.bundle.quality.blocked_section_ids) == {
+        "macro.kr.ecos",
+        "company.official_news",
+        INDEPENDENT_NEWS_SECTION_ID,
+    }
     assert any("조정주가" in warning for warning in result.bundle.quality.warnings)
     price_source = next(
         source for source in result.bundle.sources if source.source_id.startswith("market.price")

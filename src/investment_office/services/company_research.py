@@ -34,6 +34,13 @@ DART_FINANCIAL_URL: Final = "https://opendart.fss.or.kr/api/fnlttSinglAcntAll.js
 
 FUNDAMENTAL_SECTION_ID: Final = "company.fundamental"
 OFFICIAL_NEWS_SECTION_ID: Final = "company.official_news"
+OFFICIAL_DISCLOSURE_METADATA_UNITS: Final = frozenset(
+    {"accession_number", "receipt_number", "form"}
+)
+OFFICIAL_DISCLOSURE_METADATA_GAP: Final = (
+    "공시 접수번호·양식·문서명은 메타데이터이므로 "
+    "공시 원문이나 독립 뉴스 근거를 대신할 수 없습니다."
+)
 _RECENT_FILING_FORMS: Final = frozenset({"10-K", "10-Q", "8-K"})
 _MAX_FILING_EVENTS: Final = 20
 _MAX_CORP_CODE_ARCHIVE_BYTES: Final = 20 * 1024 * 1024
@@ -328,9 +335,13 @@ class OfficialCompanyResearchClient:
             ),
             _evidence_section(
                 OFFICIAL_NEWS_SECTION_ID,
-                "공식 공시 이벤트",
+                "공식 공시 메타데이터",
                 filing_facts,
-                () if filing_facts else ("cutoff 이전 최근 10-K, 10-Q, 8-K 공시가 없습니다.",),
+                (
+                    (OFFICIAL_DISCLOSURE_METADATA_GAP,)
+                    if filing_facts
+                    else ("cutoff 이전 최근 10-K, 10-Q, 8-K 공시가 없습니다.",)
+                ),
             ),
         )
         return CompanyResearchResult(
@@ -432,9 +443,13 @@ class OfficialCompanyResearchClient:
             ),
             _evidence_section(
                 OFFICIAL_NEWS_SECTION_ID,
-                "공식 공시 이벤트",
+                "공식 공시 메타데이터",
                 disclosure_facts,
-                () if disclosure_facts else ("cutoff 이전 최근 OpenDART 공시가 없습니다.",),
+                (
+                    (OFFICIAL_DISCLOSURE_METADATA_GAP,)
+                    if disclosure_facts
+                    else ("cutoff 이전 최근 OpenDART 공시가 없습니다.",)
+                ),
             ),
         )
         return CompanyResearchResult(
@@ -501,7 +516,7 @@ def _unavailable_result(reason: str) -> CompanyResearchResult:
         )
         for section_id, title in (
             (FUNDAMENTAL_SECTION_ID, "공식 재무제표"),
-            (OFFICIAL_NEWS_SECTION_ID, "공식 공시 이벤트"),
+            (OFFICIAL_NEWS_SECTION_ID, "공식 공시 메타데이터"),
         )
     )
     return CompanyResearchResult(sources=(), facts=(), sections=sections)

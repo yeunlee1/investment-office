@@ -13,6 +13,8 @@ from pydantic import AnyHttpUrl
 
 from investment_office.services.company_research import (
     FUNDAMENTAL_SECTION_ID,
+    OFFICIAL_DISCLOSURE_METADATA_GAP,
+    OFFICIAL_DISCLOSURE_METADATA_UNITS,
     OFFICIAL_NEWS_SECTION_ID,
     CompanyResearchResult,
     OfficialCompanyResearchClient,
@@ -117,6 +119,7 @@ class _MergedResearch:
 class _ValuationInput:
     value: float | None
     fact: Fact | None
+    is_proxy: bool = False
 
 
 class ResearchPipeline:
@@ -132,12 +135,18 @@ class ResearchPipeline:
         ecos_api_key: str | None = None,
         now_factory: Callable[[], datetime] | None = None,
         price_max_age_days: int = 7,
+        fundamental_max_age_days: int = 180,
+        disclosure_max_age_days: int = 120,
         macro_cache_ttl_seconds: float = 900,
     ) -> None:
         if isinstance(price_max_age_days, bool) or price_max_age_days < 1:
             raise ValueError("price_max_age_days는 1 이상이어야 합니다.")
         if isinstance(macro_cache_ttl_seconds, bool) or macro_cache_ttl_seconds <= 0:
             raise ValueError("macro_cache_ttl_seconds는 0보다 커야 합니다.")
+        if isinstance(fundamental_max_age_days, bool) or fundamental_max_age_days < 1:
+            raise ValueError("fundamental_max_age_days는 1 이상이어야 합니다.")
+        if isinstance(disclosure_max_age_days, bool) or disclosure_max_age_days < 1:
+            raise ValueError("disclosure_max_age_days는 1 이상이어야 합니다.")
         self.macro_client = macro_client
         self.company_client = company_client
         self.regime_evaluator = regime_evaluator or MarketRegimeEvaluator()
@@ -147,6 +156,8 @@ class ResearchPipeline:
         )
         self._now_factory = now_factory or (lambda: datetime.now(UTC))
         self._price_max_age = timedelta(days=price_max_age_days)
+        self._fundamental_max_age = timedelta(days=fundamental_max_age_days)
+        self._disclosure_max_age = timedelta(days=disclosure_max_age_days)
         self._macro_cache_ttl = timedelta(seconds=float(macro_cache_ttl_seconds))
         self._macro_cache: MacroContextResult | None = None
         self._macro_cached_at: datetime | None = None
@@ -178,6 +189,10 @@ class ResearchPipeline:
             macro_result,
             observation_cutoff,
         )
+        company_result = _restrict_company_to_observation_cutoff(
+            company_result,
+            observation_cutoff,
+        )
 
         collection_finished_at = _require_aware(self._now_factory(), "수집 완료 시각")
         bundle_cutoff = _collection_cutoff(
@@ -194,7 +209,12 @@ class ResearchPipeline:
             max_age=self._price_max_age,
         )
         macro_part = _macro_part(macro_result)
-        company_part = _company_part(company_result)
+        company_part = _company_part(
+            company_result,
+            cutoff=observation_cutoff,
+            fundamental_max_age=self._fundamental_max_age,
+            disclosure_max_age=self._disclosure_max_age,
+        )
         valuation_part = _build_valuation_part(
             instrument,
             snapshot,
@@ -253,7 +273,8 @@ class ResearchPipeline:
                 bundle.sections,
                 fact_by_id,
                 source_by_id,
-                {OFFICIAL_NEWS_SECTION_ID},
+                {OFFICIAL_NEWS_SECTION_ID, INDEPENDENT_NEWS_SECTION_ID},
+                excluded_units=OFFICIAL_DISCLOSURE_METADATA_UNITS,
             ),
             macro=_agent_facts(
                 bundle.sections,
@@ -489,6 +510,64 @@ def _restrict_macro_to_observation_cutoff(
             fact_id for fact_id in result.stale_fact_ids if fact_id in retained_ids
         ),
         future_section_ids=result.future_section_ids,
+    )
+
+
+def _restrict_company_to_observation_cutoff(
+    result: CompanyResearchResult,
+    observation_cutoff: datetime,
+) -> CompanyResearchResult:
+    retained_facts = tuple(
+        fact
+        for fact in result.facts
+        if fact.observed_at <= observation_cutoff and fact.published_at <= observation_cutoff
+    )
+    retained_ids = {fact.fact_id for fact in retained_facts}
+    removed_ids = {fact.fact_id for fact in result.facts} - retained_ids
+    if not removed_ids:
+        return result
+
+    sections: list[ResearchSection] = []
+    for section in result.sections:
+        retained_section_ids = tuple(
+            fact_id for fact_id in section.fact_ids if fact_id in retained_ids
+        )
+        removed_section_ids = set(section.fact_ids) - set(retained_section_ids)
+        if not removed_section_ids:
+            sections.append(section)
+            continue
+        gap = "관측 cutoff 이후에 공개된 회사 사실을 미래 정보로 제외했습니다."
+        if not retained_section_ids:
+            sections.append(
+                ResearchSection(
+                    section_id=section.section_id,
+                    title=section.title,
+                    status=SectionStatus.BLOCKED,
+                    required=section.required,
+                    data_gaps=_unique((*section.data_gaps, gap)),
+                    blocking_reasons=_unique(
+                        (*section.blocking_reasons, "관측 경계 이전의 회사 사실이 없습니다.")
+                    ),
+                )
+            )
+            continue
+        sections.append(
+            ResearchSection(
+                section_id=section.section_id,
+                title=section.title,
+                status=SectionStatus.BLOCKED,
+                required=section.required,
+                fact_ids=retained_section_ids,
+                data_gaps=_unique((*section.data_gaps, gap)),
+                blocking_reasons=_unique(
+                    (*section.blocking_reasons, "미래 회사 사실을 제외해 필수 근거가 불완전합니다.")
+                ),
+            )
+        )
+    return CompanyResearchResult(
+        sources=result.sources,
+        facts=retained_facts,
+        sections=tuple(sections),
     )
 
 
@@ -763,8 +842,89 @@ def _macro_part(result: MacroContextResult) -> _CollectedPart:
     )
 
 
-def _company_part(result: CompanyResearchResult) -> _CollectedPart:
-    return _CollectedPart(result.sources, result.facts, result.sections)
+def _company_part(
+    result: CompanyResearchResult,
+    *,
+    cutoff: datetime,
+    fundamental_max_age: timedelta,
+    disclosure_max_age: timedelta,
+) -> _CollectedPart:
+    required_section_ids = (FUNDAMENTAL_SECTION_ID, OFFICIAL_NEWS_SECTION_ID)
+    existing_section_ids = {section.section_id for section in result.sections}
+    missing_required = tuple(
+        section_id for section_id in required_section_ids if section_id not in existing_section_ids
+    )
+    fact_by_id = {fact.fact_id: fact for fact in result.facts}
+    stale_fact_ids: list[str] = []
+    sections: list[ResearchSection] = []
+
+    for section in result.sections:
+        required = section.required or section.section_id in required_section_ids
+        section_facts = tuple(
+            fact_by_id[fact_id] for fact_id in section.fact_ids if fact_id in fact_by_id
+        )
+        status = section.status
+        data_gaps = list(section.data_gaps)
+        blocking_reasons = list(section.blocking_reasons)
+
+        metadata_only = (
+            section.section_id == OFFICIAL_NEWS_SECTION_ID
+            and len(section_facts) == len(section.fact_ids)
+            and bool(section_facts)
+            and all(fact.unit in OFFICIAL_DISCLOSURE_METADATA_UNITS for fact in section_facts)
+        )
+        if metadata_only:
+            if status is SectionStatus.COMPLETE:
+                status = SectionStatus.PARTIAL
+            data_gaps.append(OFFICIAL_DISCLOSURE_METADATA_GAP)
+            blocking_reasons.append(
+                "공시 메타데이터만으로 공식 뉴스 근거가 충족되었다고 판단할 수 없습니다."
+            )
+
+        max_age = (
+            fundamental_max_age
+            if section.section_id == FUNDAMENTAL_SECTION_ID
+            else disclosure_max_age
+            if section.section_id == OFFICIAL_NEWS_SECTION_ID
+            else None
+        )
+        section_stale_ids = tuple(
+            fact.fact_id
+            for fact in section_facts
+            if max_age is not None
+            and (
+                cutoff - fact.observed_at > max_age
+                or cutoff - fact.published_at > max_age
+            )
+        )
+        if section_stale_ids:
+            assert max_age is not None
+            stale_fact_ids.extend(section_stale_ids)
+            status = SectionStatus.BLOCKED
+            blocking_reasons.append(
+                f"{section.title} 사실이 허용 수명 {max_age.days}일을 넘어 "
+                "현재 투자 판단에 사용할 수 없습니다."
+            )
+
+        sections.append(
+            ResearchSection(
+                section_id=section.section_id,
+                title=section.title,
+                status=status,
+                required=required,
+                fact_ids=section.fact_ids,
+                data_gaps=_unique(data_gaps),
+                blocking_reasons=_unique(blocking_reasons),
+            )
+        )
+
+    return _CollectedPart(
+        sources=result.sources,
+        facts=result.facts,
+        sections=tuple(sections),
+        stale_fact_ids=_unique(stale_fact_ids),
+        missing_required_sections=missing_required,
+    )
 
 
 def _build_valuation_part(
@@ -772,12 +932,20 @@ def _build_valuation_part(
     snapshot: EODSnapshot,
     company_part: _CollectedPart,
 ) -> _CollectedPart:
+    input_aliases = {
+        "shares_outstanding": ("발행주식수",),
+        "ttm_net_income": ("TTM 순이익", "최근 공시 기준 순이익"),
+        "average_equity": ("평균자본", "최근 공시 기준 자본"),
+        "average_assets": ("평균자산", "최근 공시 기준 자산"),
+        "book_equity": ("장부자본", "최근 공시 기준 자본"),
+    }
     inputs = {
-        "shares_outstanding": _valuation_input(company_part.facts, "발행주식수"),
-        "ttm_net_income": _valuation_input(company_part.facts, "TTM 순이익"),
-        "average_equity": _valuation_input(company_part.facts, "평균자본"),
-        "average_assets": _valuation_input(company_part.facts, "평균자산"),
-        "book_equity": _valuation_input(company_part.facts, "장부자본"),
+        input_name: _valuation_input(
+            company_part.facts,
+            aliases,
+            excluded_fact_ids=company_part.stale_fact_ids,
+        )
+        for input_name, aliases in input_aliases.items()
     }
     metrics = calculate_valuation_metrics(
         price=snapshot.current_close,
@@ -798,6 +966,13 @@ def _build_valuation_part(
     for key, metric, value, required_inputs, unit in metric_specs:
         if value is None:
             continue
+        if metric in {"ROE", "ROA"} and any(
+            inputs[input_name].is_proxy for input_name in required_inputs
+        ):
+            gaps.append(
+                f"{metric}는 TTM·평균잔액 입력 대신 최근 공시 순이익과 "
+                "기말잔액을 사용한 참고 비율입니다."
+            )
         lineage = tuple(
             item.fact
             for input_name in required_inputs
@@ -835,16 +1010,28 @@ def _build_valuation_part(
     return _CollectedPart((), tuple(facts), (section,))
 
 
-def _valuation_input(facts: Sequence[Fact], metric: str) -> _ValuationInput:
-    matches = [fact for fact in facts if fact.metric == metric]
-    if not matches:
-        return _ValuationInput(None, None)
-    fact = max(matches, key=lambda item: (item.observed_at, item.published_at, item.revision))
-    value = fact.value
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return _ValuationInput(None, fact)
-    numeric = float(value)
-    return _ValuationInput(numeric if math.isfinite(numeric) else None, fact)
+def _valuation_input(
+    facts: Sequence[Fact],
+    metrics: Sequence[str],
+    *,
+    excluded_fact_ids: Sequence[str] = (),
+) -> _ValuationInput:
+    excluded = set(excluded_fact_ids)
+    for index, metric in enumerate(metrics):
+        matches = [fact for fact in facts if fact.metric == metric and fact.fact_id not in excluded]
+        if not matches:
+            continue
+        fact = max(matches, key=lambda item: (item.observed_at, item.published_at, item.revision))
+        value = fact.value
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return _ValuationInput(None, fact, index > 0)
+        numeric = float(value)
+        return _ValuationInput(
+            numeric if math.isfinite(numeric) else None,
+            fact,
+            index > 0,
+        )
+    return _ValuationInput(None, None)
 
 
 def _independent_news_part() -> _CollectedPart:
@@ -855,7 +1042,8 @@ def _independent_news_part() -> _CollectedPart:
             _optional_unavailable_section(
                 INDEPENDENT_NEWS_SECTION_ID,
                 "독립 언론 뉴스",
-                "공식 공시는 확보하지만 독립 언론 뉴스 공급원은 아직 연결되지 않았습니다.",
+                "검증 가능한 독립 언론 뉴스 공급원이 아직 연결되지 않았습니다.",
+                required=True,
             ),
         ),
     )
@@ -1037,6 +1225,8 @@ def _agent_facts(
     fact_by_id: Mapping[str, Fact],
     source_by_id: Mapping[str, SourceRef],
     section_ids: set[str],
+    *,
+    excluded_units: frozenset[str] = frozenset(),
 ) -> list[dict[str, object]]:
     selected_ids = _unique(
         fact_id
@@ -1047,7 +1237,7 @@ def _agent_facts(
     output: list[dict[str, object]] = []
     for fact_id in selected_ids:
         fact = fact_by_id.get(fact_id)
-        if fact is None:
+        if fact is None or fact.unit in excluded_units:
             continue
         source = source_by_id[fact.source_id]
         payload = fact.model_dump(mode="json")

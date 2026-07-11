@@ -688,6 +688,14 @@ async def test_api_accepts_explicit_korean_market_and_keeps_markets_separate() -
             assert discovery["universe_size"] == 30
             assert all(item["market"] == "kr" for item in discovery["candidates"])
 
+            sources_response = await client.get("/api/data-sources")
+            assert sources_response.status_code == 200
+            sources = sources_response.json()["sources"]
+            by_id = {item["policy"]["id"]: item for item in sources}
+            assert by_id["sec"]["status"]["analysis_ready"] is True
+            assert by_id["data_go_kr"]["status"]["analysis_ready"] is False
+            assert by_id["reuters"]["status"]["analysis_ready"] is False
+
 
 @pytest.mark.asyncio
 async def test_run_list_filters_ui_status_and_returns_unlimited_summary() -> None:

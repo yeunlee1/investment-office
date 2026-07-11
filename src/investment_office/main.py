@@ -78,6 +78,11 @@ from investment_office.services.scheduled_analysis import (
     ScheduledAnalysisTransitionError,
     ScheduledAnalysisValidationError,
 )
+from investment_office.services.source_registry import (
+    SourceId,
+    list_source_policies,
+    validate_source_configuration,
+)
 from investment_office.services.work_items import (
     WorkItemNotFoundError,
     WorkItemService,
@@ -252,6 +257,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         resolved_settings = settings or get_settings()
+        app.state.settings = resolved_settings
         database_runtime: DatabaseRuntime | None = None
         resolved_storage = storage
         if resolved_storage is None:
@@ -703,6 +709,31 @@ def create_app(
                 for event in recent_events
             ],
         }
+
+    @app.get("/api/data-sources")
+    async def api_data_sources(request: Request) -> dict[str, Any]:
+        """시장별 데이터 공급원 정책과 현재 인증 준비 상태를 공개한다."""
+
+        active_settings = cast(Settings, request.app.state.settings)
+        configured_environment = {
+            "DATA_GO_KR_SERVICE_KEY": active_settings.data_go_kr_service_key or "",
+            "DART_API_KEY": active_settings.dart_api_key or "",
+        }
+        sources = []
+        for policy in list_source_policies(include_disabled=True):
+            validation = validate_source_configuration(
+                policy.id,
+                configured_environment,
+                require_analysis=policy.id
+                not in {SourceId.BIGKINDS, SourceId.NAVER_NEWS, SourceId.REUTERS},
+            )
+            sources.append(
+                {
+                    "policy": policy.model_dump(mode="json"),
+                    "status": validation.model_dump(mode="json"),
+                }
+            )
+        return {"sources": sources}
 
     @app.post("/api/analyze", status_code=status.HTTP_202_ACCEPTED)
     async def api_analyze(payload: AnalyzeRequest, request: Request) -> dict[str, Any]:

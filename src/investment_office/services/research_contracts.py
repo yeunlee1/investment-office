@@ -67,6 +67,12 @@ class SourceTier(StrEnum):
     FALLBACK = "fallback"
 
 
+class PublicationTimeBasis(StrEnum):
+    REPORTED = "reported"
+    OBSERVATION_DATE_PROXY = "observation_date_proxy"
+    RETRIEVAL_TIME_PROXY = "retrieval_time_proxy"
+
+
 class SourceRef(ResearchContract):
     source_id: Identifier
     name: str = Field(min_length=1, max_length=200)
@@ -91,6 +97,7 @@ class Fact(ResearchContract):
     observed_at: AwareDatetime
     published_at: AwareDatetime
     collected_at: AwareDatetime
+    publication_time_basis: PublicationTimeBasis = PublicationTimeBasis.REPORTED
     instrument: InstrumentRef | None = None
     revision: int = Field(default=0, ge=0)
 

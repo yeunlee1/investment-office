@@ -1,6 +1,7 @@
 # 공통 거시 지표를 FRED에서 수집하고 연구 계약으로 정규화한다
 from __future__ import annotations
 
+import asyncio
 import csv
 import hashlib
 import io
@@ -16,6 +17,7 @@ from pydantic import AnyHttpUrl
 
 from investment_office.services.research_contracts import (
     Fact,
+    PublicationTimeBasis,
     ResearchSection,
     SectionStatus,
     SourceRef,
@@ -24,12 +26,12 @@ from investment_office.services.research_contracts import (
 
 FRED_CSV_URL: Final = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 FRED_SOURCE_ID: Final = "official:fred:macro"
-FUTURE_GROWTH_INFLATION_SECTION_ID: Final = "macro.growth_inflation"
 LOOKBACK_DAYS: Final = 30
 BASELINE_MAX_LAG_DAYS: Final = 7
 DEFAULT_MAX_AGE_DAYS: Final = 7
 MAX_FRED_ARCHIVE_BYTES: Final = 5 * 1024 * 1024
 MAX_FRED_UNCOMPRESSED_BYTES: Final = 20 * 1024 * 1024
+FRED_REQUEST_CHUNK_SIZE: Final = 10
 
 MacroSectionId = Literal[
     "macro.rates",
@@ -37,6 +39,7 @@ MacroSectionId = Literal[
     "macro.volatility",
     "macro.commodities",
     "macro.liquidity",
+    "macro.growth_inflation",
 ]
 ChangeMode = Literal["percentage_point", "percent"]
 
@@ -49,6 +52,10 @@ class FredSeriesSpec:
     unit: str
     currency: str | None
     change_mode: ChangeMode
+    lookback_days: int = LOOKBACK_DAYS
+    baseline_max_lag_days: int = BASELINE_MAX_LAG_DAYS
+    max_age_days: int | None = None
+    change_label: str = "30일 변화"
 
 
 FRED_SERIES: Final = (
@@ -116,6 +123,7 @@ FRED_SERIES: Final = (
         "index_point",
         None,
         "percent",
+        max_age_days=14,
     ),
     FredSeriesSpec(
         "CBBTCUSD",
@@ -126,12 +134,78 @@ FRED_SERIES: Final = (
         "percent",
     ),
     FredSeriesSpec(
+        "WALCL",
+        "미 연준 총자산",
+        "macro.liquidity",
+        "million_usd",
+        "USD",
+        "percent",
+        baseline_max_lag_days=14,
+        max_age_days=14,
+    ),
+    FredSeriesSpec(
+        "RRPONTSYD",
+        "미 연준 역레포 잔액",
+        "macro.liquidity",
+        "billion_usd",
+        "USD",
+        "percent",
+    ),
+    FredSeriesSpec(
         "DEXKOUS",
         "원·달러 환율",
         "macro.currency",
         "krw_per_usd",
         None,
         "percent",
+        max_age_days=14,
+    ),
+    FredSeriesSpec(
+        "CPIAUCSL",
+        "미국 소비자물가지수",
+        "macro.growth_inflation",
+        "index_1982_1984_100",
+        None,
+        "percent",
+        lookback_days=365,
+        baseline_max_lag_days=45,
+        max_age_days=75,
+        change_label="12개월 변화",
+    ),
+    FredSeriesSpec(
+        "CPILFESL",
+        "미국 근원 소비자물가지수",
+        "macro.growth_inflation",
+        "index_1982_1984_100",
+        None,
+        "percent",
+        lookback_days=365,
+        baseline_max_lag_days=45,
+        max_age_days=75,
+        change_label="12개월 변화",
+    ),
+    FredSeriesSpec(
+        "UNRATE",
+        "미국 실업률",
+        "macro.growth_inflation",
+        "percent",
+        None,
+        "percentage_point",
+        baseline_max_lag_days=35,
+        max_age_days=75,
+        change_label="1개월 변화",
+    ),
+    FredSeriesSpec(
+        "INDPRO",
+        "미국 산업생산지수",
+        "macro.growth_inflation",
+        "index_2017_100",
+        None,
+        "percent",
+        lookback_days=365,
+        baseline_max_lag_days=45,
+        max_age_days=75,
+        change_label="12개월 변화",
     ),
 )
 FRED_SERIES_IDS: Final = tuple(spec.series_id for spec in FRED_SERIES)
@@ -142,6 +216,7 @@ SECTION_TITLES: Final[Mapping[MacroSectionId, str]] = {
     "macro.volatility": "시장 변동성",
     "macro.commodities": "원유 가격",
     "macro.liquidity": "유동성과 위험 선호",
+    "macro.growth_inflation": "미국 성장과 물가",
 }
 SECTION_ORDER: Final = tuple(SECTION_TITLES)
 
@@ -156,7 +231,7 @@ class MacroContextResult:
     facts: tuple[Fact, ...]
     sections: tuple[ResearchSection, ...]
     stale_fact_ids: tuple[str, ...] = ()
-    future_section_ids: tuple[str, ...] = (FUTURE_GROWTH_INFLATION_SECTION_ID,)
+    future_section_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,16 +271,23 @@ class FredMacroContextClient:
     async def fetch(self) -> MacroContextResult:
         """모든 지정 계열을 한 요청으로 읽어 최신값과 30일 변화를 만든다."""
 
-        response = await self._get()
+        responses = await self._get_all()
         collected_at = self._aware_now()
-        observations = _parse_fred_content(response.content, collected_at.date())
+        observations = _merge_observation_sets(
+            tuple(
+                _parse_fred_content(response.content, collected_at.date())
+                for response in responses
+            )
+        )
         source = SourceRef(
             source_id=FRED_SOURCE_ID,
             name="Federal Reserve Economic Data",
             tier=SourceTier.OFFICIAL,
-            url=AnyHttpUrl(str(response.request.url)),
+            url=AnyHttpUrl(FRED_CSV_URL),
             retrieved_at=collected_at,
-            content_checksum=hashlib.sha256(response.content).hexdigest(),
+            content_checksum=hashlib.sha256(
+                b"\0".join(response.content for response in responses)
+            ).hexdigest(),
         )
 
         facts: list[Fact] = []
@@ -244,31 +326,45 @@ class FredMacroContextClient:
             stale_fact_ids=tuple(stale_fact_ids),
         )
 
-    async def _get(self) -> httpx.Response:
-        params = {"id": ",".join(FRED_SERIES_IDS)}
+    async def _get_all(self) -> tuple[httpx.Response, ...]:
+        chunks = tuple(
+            FRED_SERIES_IDS[index : index + FRED_REQUEST_CHUNK_SIZE]
+            for index in range(0, len(FRED_SERIES_IDS), FRED_REQUEST_CHUNK_SIZE)
+        )
         headers = {
             "Accept": "text/csv",
             "User-Agent": "investment-office/0.1",
         }
         try:
             if self.client is not None:
-                response = await self.client.get(
-                    FRED_CSV_URL,
-                    params=params,
-                    headers=headers,
-                    timeout=self.timeout_seconds,
+                responses = await asyncio.gather(
+                    *(
+                        self.client.get(
+                            FRED_CSV_URL,
+                            params={"id": ",".join(chunk)},
+                            headers=headers,
+                            timeout=self.timeout_seconds,
+                        )
+                        for chunk in chunks
+                    )
                 )
             else:
                 async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                    response = await client.get(
-                        FRED_CSV_URL,
-                        params=params,
-                        headers=headers,
+                    responses = await asyncio.gather(
+                        *(
+                            client.get(
+                                FRED_CSV_URL,
+                                params={"id": ",".join(chunk)},
+                                headers=headers,
+                            )
+                            for chunk in chunks
+                        )
                     )
-            response.raise_for_status()
+            for response in responses:
+                response.raise_for_status()
         except httpx.HTTPError as exc:
             raise MacroContextError(f"FRED 거시 자료 요청이 실패했습니다. {exc}") from exc
-        return response
+        return tuple(responses)
 
     def _aware_now(self) -> datetime:
         now = self._now_factory()
@@ -294,22 +390,36 @@ class FredMacroContextClient:
         level_fact = _build_fact(spec, latest, collected_at, kind="level")
         facts = [level_fact]
         data_gaps: list[str] = []
-        stale = collected_at - _at_utc_midnight(latest.observed_on) > self._max_age
+        max_age = (
+            timedelta(days=spec.max_age_days)
+            if spec.max_age_days is not None
+            else self._max_age
+        )
+        stale = collected_at - _at_utc_midnight(latest.observed_on) > max_age
 
-        baseline = _find_baseline(observations, latest.observed_on)
+        baseline = _find_baseline(
+            observations,
+            latest.observed_on,
+            lookback_days=spec.lookback_days,
+            max_lag_days=spec.baseline_max_lag_days,
+        )
         if baseline is None:
-            data_gaps.append(f"{spec.series_id}의 유효한 30일 전 기준값이 없습니다.")
+            data_gaps.append(
+                f"{spec.series_id}의 유효한 {spec.change_label} 기준값이 없습니다."
+            )
         else:
             change = _calculate_change(spec, latest.value, baseline.value)
             if change is None:
-                data_gaps.append(f"{spec.series_id}의 30일 변화율 기준값이 0입니다.")
+                data_gaps.append(
+                    f"{spec.series_id}의 {spec.change_label} 기준값이 0입니다."
+                )
             else:
                 facts.append(
                     _build_fact(
                         spec,
                         _Observation(latest.observed_on, change),
                         collected_at,
-                        kind="change_30d",
+                        kind="change",
                     )
                 )
 
@@ -421,6 +531,25 @@ def _parse_fred_content(
     }
 
 
+def _merge_observation_sets(
+    observation_sets: tuple[dict[str, tuple[_Observation, ...]], ...],
+) -> dict[str, tuple[_Observation, ...]]:
+    merged: dict[str, dict[date, float]] = {
+        series_id: {} for series_id in FRED_SERIES_IDS
+    }
+    for observations_by_series in observation_sets:
+        for series_id, observations in observations_by_series.items():
+            for observation in observations:
+                merged[series_id][observation.observed_on] = observation.value
+    return {
+        series_id: tuple(
+            _Observation(observed_on, value)
+            for observed_on, value in sorted(series_values.items())
+        )
+        for series_id, series_values in merged.items()
+    }
+
+
 def _parse_date(raw: str | None) -> date | None:
     if raw is None:
         return None
@@ -446,9 +575,12 @@ def _parse_number(raw: str | None) -> float | None:
 def _find_baseline(
     observations: tuple[_Observation, ...],
     latest_date: date,
+    *,
+    lookback_days: int,
+    max_lag_days: int,
 ) -> _Observation | None:
-    target = latest_date - timedelta(days=LOOKBACK_DAYS)
-    earliest = target - timedelta(days=BASELINE_MAX_LAG_DAYS)
+    target = latest_date - timedelta(days=lookback_days)
+    earliest = target - timedelta(days=max_lag_days)
     candidates = [
         observation for observation in observations if earliest <= observation.observed_on <= target
     ]
@@ -472,20 +604,22 @@ def _build_fact(
     observation: _Observation,
     collected_at: datetime,
     *,
-    kind: Literal["level", "change_30d"],
+    kind: Literal["level", "change"],
 ) -> Fact:
-    is_change = kind == "change_30d"
+    is_change = kind == "change"
+    fact_kind = f"change_{spec.lookback_days}d" if is_change else "level"
     change_unit = "percentage_point" if spec.change_mode == "percentage_point" else "percent"
     return Fact(
-        fact_id=f"macro:fred:{spec.series_id.casefold()}:{kind}",
+        fact_id=f"macro:fred:{spec.series_id.casefold()}:{fact_kind}",
         source_id=FRED_SOURCE_ID,
-        metric=f"{spec.metric} 30일 변화" if is_change else spec.metric,
+        metric=f"{spec.metric} {spec.change_label}" if is_change else spec.metric,
         value=observation.value,
         unit=change_unit if is_change else spec.unit,
         currency=None if is_change else spec.currency,
         observed_at=_at_utc_midnight(observation.observed_on),
-        published_at=collected_at,
+        published_at=_at_utc_midnight(observation.observed_on),
         collected_at=collected_at,
+        publication_time_basis=PublicationTimeBasis.OBSERVATION_DATE_PROXY,
     )
 
 

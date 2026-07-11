@@ -10,12 +10,14 @@ import pytest
 
 from investment_office.services.macro_context import (
     FRED_SERIES_IDS,
-    FUTURE_GROWTH_INFLATION_SECTION_ID,
     FredMacroContextClient,
     MacroContextError,
     build_ecos_unavailable_section,
 )
-from investment_office.services.research_contracts import SectionStatus
+from investment_office.services.research_contracts import (
+    PublicationTimeBasis,
+    SectionStatus,
+)
 
 COLLECTED_AT = datetime(2026, 7, 12, 9, 30, tzinfo=UTC)
 
@@ -45,8 +47,9 @@ def _mock_binary_client(content: bytes) -> httpx.AsyncClient:
 
 
 @pytest.mark.asyncio
-async def test_fetch_uses_one_official_csv_request_and_builds_all_sections() -> None:
+async def test_fetch_uses_bounded_official_requests_and_builds_all_sections() -> None:
     content = _csv(
+        ("2025-07-10", _values(5)),
         ("2026-06-09", _values(10)),
         ("2026-07-09", _values(20)),
         ("2026-07-10", _values(30)),
@@ -61,9 +64,14 @@ async def test_fetch_uses_one_official_csv_request_and_builds_all_sections() -> 
     finally:
         await http_client.aclose()
 
-    assert len(requests) == 1
-    assert requests[0].url.host == "fred.stlouisfed.org"
-    assert requests[0].url.params["id"].split(",") == list(FRED_SERIES_IDS)
+    assert len(requests) == 2
+    assert all(request.url.host == "fred.stlouisfed.org" for request in requests)
+    requested_ids = [
+        series_id
+        for request in requests
+        for series_id in request.url.params["id"].split(",")
+    ]
+    assert requested_ids == list(FRED_SERIES_IDS)
     assert len(result.sources) == 1
     assert str(result.sources[0].url).startswith("https://fred.stlouisfed.org/")
     assert result.sources[0].retrieved_at == COLLECTED_AT
@@ -77,15 +85,17 @@ async def test_fetch_uses_one_official_csv_request_and_builds_all_sections() -> 
         "macro.volatility",
         "macro.commodities",
         "macro.liquidity",
+        "macro.growth_inflation",
     ]
     assert result.stale_fact_ids == ()
-    assert result.future_section_ids == (FUTURE_GROWTH_INFLATION_SECTION_ID,)
+    assert result.future_section_ids == ()
 
     dgs10_level = next(fact for fact in result.facts if fact.fact_id.endswith("dgs10:level"))
     dgs10_change = next(fact for fact in result.facts if fact.fact_id.endswith("dgs10:change_30d"))
     assert dgs10_level.value == 36.0
     assert dgs10_level.observed_at == datetime(2026, 7, 10, tzinfo=UTC)
     assert dgs10_level.collected_at == COLLECTED_AT
+    assert dgs10_level.publication_time_basis is PublicationTimeBasis.OBSERVATION_DATE_PROXY
     assert dgs10_change.value == 20.0
     assert dgs10_change.unit == "percentage_point"
 
@@ -100,13 +110,16 @@ async def test_fetch_merges_official_multi_series_zip_response() -> None:
             "daily-one.csv",
             "observation_date,"
             + ",".join(first_ids)
-            + "\n2026-06-10,1,2,3,4\n2026-07-10,5,6,7,8\n",
+            + "\n2025-07-10,1,2,3,4\n2026-06-10,1,2,3,4\n"
+            + "2026-07-10,5,6,7,8\n",
         )
         archive.writestr(
             "daily-two.csv",
             "observation_date,"
             + ",".join(second_ids)
-            + "\n2026-06-10,1,2,3,4,5,6,7\n2026-07-10,5,6,7,8,9,10,11\n",
+            + "\n2025-07-10,1,2,3,4,5,6,7,8,9,10,11,12,13\n"
+            + "2026-06-10,1,2,3,4,5,6,7,8,9,10,11,12,13\n"
+            + "2026-07-10,5,6,7,8,9,10,11,12,13,14,15,16,17\n",
         )
         archive.writestr("README.txt", "설명")
     http_client = _mock_binary_client(buffer.getvalue())
@@ -140,7 +153,7 @@ async def test_missing_series_and_baseline_are_explicitly_partial_or_blocked() -
     sections = {section.section_id: section for section in result.sections}
     assert sections["macro.rates"].status is SectionStatus.PARTIAL
     assert any("DGS3 최신 유효값" in gap for gap in sections["macro.rates"].data_gaps)
-    assert any("30일 전 기준값" in gap for gap in sections["macro.currency"].data_gaps)
+    assert any("30일 변화 기준값" in gap for gap in sections["macro.currency"].data_gaps)
     assert sections["macro.volatility"].status is SectionStatus.PARTIAL
     assert sections["macro.liquidity"].status is SectionStatus.PARTIAL
 
@@ -168,7 +181,7 @@ async def test_stale_latest_values_block_sections_and_identify_stale_facts() -> 
     try:
         result = await FredMacroContextClient(
             client=http_client,
-            now_factory=lambda: datetime(2026, 7, 20, tzinfo=UTC),
+            now_factory=lambda: datetime(2026, 10, 20, tzinfo=UTC),
         ).fetch()
     finally:
         await http_client.aclose()
@@ -204,4 +217,4 @@ async def test_invalid_csv_is_reported_without_falling_back_to_network() -> None
     finally:
         await http_client.aclose()
 
-    assert len(requests) == 1
+    assert len(requests) == 2

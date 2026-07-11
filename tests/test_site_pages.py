@@ -173,4 +173,4 @@ def test_market_control_room_exposes_cross_market_quality_contract() -> None:
     assert 'Promise.allSettled' in MARKETS_SCRIPT
     assert 'quality?.macro_eligible === true' in MARKETS_SCRIPT
     assert 'src="/static/markets.js?v=1"' in MARKETS
-    assert 'href="/static/markets.css?v=1"' in MARKETS
+    assert 'href="/static/markets.css?v=3"' in MARKETS

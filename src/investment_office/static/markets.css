@@ -1,6 +1,7 @@
 /* 미국과 한국 시장의 국면과 자료 품질을 산업형 관제 화면으로 표현한다. */
 .page-markets .site-main {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: clamp(20px, 2vw, 32px);
 }
 
@@ -286,7 +287,7 @@
   padding: 14px clamp(18px, 2.3vw, 34px);
   border-top: 1px solid var(--line);
   background: var(--paper-muted);
-  grid-template-columns: minmax(0, 1fr) minmax(260px, auto);
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 3fr);
   align-items: center;
   gap: 16px;
 }
@@ -298,6 +299,7 @@
 
 .inline-warning-list {
   display: flex;
+  min-width: 0;
   padding: 0;
   justify-content: flex-end;
   flex-wrap: wrap;

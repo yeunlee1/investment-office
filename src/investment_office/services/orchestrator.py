@@ -223,9 +223,47 @@ class InvestmentCommittee:
                 market_payload,
                 committee_context,
             )
-            chairman_payload = cast(dict[str, Any], chairman.data)
+            agent_outputs = [*first_stage, *debate, chairman]
+            chairman_payload = dict(cast(dict[str, Any], chairman.data))
+            chairman_payload["data_gaps"] = self._merge_data_gaps(
+                *(cast(dict[str, Any], output.data) for output in agent_outputs)
+            )
             risk = self._risk_function(market_snapshot, chairman_payload)
             risk_payload = risk.model_dump(mode="json")
+            risk_payload["data_gaps"] = self._merge_data_gaps(
+                chairman_payload,
+                risk_payload,
+            )
+            missing_required_roles = [
+                role
+                for role in (AgentRole.FUNDAMENTAL, AgentRole.NEWS)
+                if self._role_input_is_missing(role, market_payload)
+            ]
+            if missing_required_roles:
+                role_names = [
+                    "재무·공시" if role is AgentRole.FUNDAMENTAL else "뉴스"
+                    for role in missing_required_roles
+                ]
+                warning = (
+                    f"필수 분석 자료({', '.join(role_names)})가 없어 "
+                    "신규 포지션을 차단합니다."
+                )
+                if str(risk_payload.get("action", "")).strip().casefold() == "size_position":
+                    risk_payload["action"] = "watch"
+                risk_payload["eligible"] = False
+                risk_payload["position_cap_pct"] = 0.0
+                risk_payload["warnings"] = list(
+                    dict.fromkeys(
+                        [
+                            *(
+                                str(item)
+                                for item in risk_payload.get("warnings", [])
+                                if str(item).strip()
+                            ),
+                            warning,
+                        ]
+                    )
+                )
             risk_output = AgentOutput(
                 analysis_run_id=run.id,
                 role=AgentRole.RISK_MANAGER,
@@ -688,6 +726,7 @@ class InvestmentCommittee:
         if not risk_eligible:
             risks.insert(0, "위험 정책이 신규 포지션을 허용하지 않습니다.")
         risks = list(dict.fromkeys(risks))
+        data_gaps = InvestmentCommittee._merge_data_gaps(chairman, risk)
         return {
             "ticker": candidate.ticker,
             "recommendation": recommendation,
@@ -697,7 +736,7 @@ class InvestmentCommittee:
             "key_points": chairman.get("key_points", []),
             "risks": risks,
             "invalidations": chairman.get("invalidations", []),
-            "data_gaps": chairman.get("data_gaps", []),
+            "data_gaps": data_gaps,
             "chairman_recommendation": chairman.get("recommendation"),
             "risk_plan": risk,
             "risk_eligible": risk_eligible,
@@ -705,6 +744,20 @@ class InvestmentCommittee:
             "human_approval_required": True,
             "auto_trade": False,
         }
+
+    @staticmethod
+    def _merge_data_gaps(*payloads: dict[str, Any]) -> list[str]:
+        data_gaps: list[str] = []
+        for payload in payloads:
+            raw_data_gaps = payload.get("data_gaps", [])
+            if not isinstance(raw_data_gaps, list):
+                continue
+            data_gaps.extend(
+                item.strip()
+                for item in raw_data_gaps
+                if isinstance(item, str) and item.strip()
+            )
+        return list(dict.fromkeys(data_gaps))
 
     @staticmethod
     def _status_message(status: str) -> str:

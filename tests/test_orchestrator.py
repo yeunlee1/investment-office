@@ -270,8 +270,8 @@ async def test_six_agent_analysis_then_human_review_state(
     assert len(draft["agents"]) == 6
     assert draft["decision"]["human_approval_required"] is True
     assert draft["decision"]["auto_trade"] is False
-    assert draft["decision"]["risk_eligible"] is True
-    assert draft["decision"]["position_cap_pct"] == 4.0
+    assert draft["decision"]["risk_eligible"] is False
+    assert draft["decision"]["position_cap_pct"] == 0.0
 
     review = await committee.record_review(run.id, decision, "리스크 조건을 확인해 기록한다.")
 
@@ -285,6 +285,34 @@ async def test_six_agent_analysis_then_human_review_state(
     assert reviewed["human_review"]["decision"] == decision.value
     last_event = storage.list_events(analysis_run_id=run.id)[-1]
     assert last_event.event_type is EventType.HUMAN_REVIEW_RECORDED
+
+
+@pytest.mark.asyncio
+async def test_missing_required_research_blocks_when_chairman_clears_gaps() -> None:
+    committee, storage, _, _ = make_committee()
+    run = await committee.create_analysis("AAPL")
+
+    await committee.run_analysis(run.id)
+
+    outputs = {output.role: output for output in storage.list_agent_outputs(run.id)}
+    assert outputs[AgentRole.HEAD_TRADER].data["data_gaps"] == []
+    expected_gaps = [
+        "검증 가능한 재무·공시 원문과 출처가 입력되지 않았습니다.",
+        "검증 가능한 뉴스 원문과 출처가 입력되지 않았습니다.",
+    ]
+    risk = outputs[AgentRole.RISK_MANAGER].data
+    assert risk["data_gaps"] == expected_gaps
+    assert risk["eligible"] is False
+    assert risk["position_cap_pct"] == 0.0
+    assert "필수 분석 자료(재무·공시, 뉴스)가 없어 신규 포지션을 차단합니다." in risk[
+        "warnings"
+    ]
+
+    decision = committee.build_run_payload(run.id)["decision"]
+    assert decision["data_gaps"] == expected_gaps
+    assert decision["recommendation"] == "hold and watch"
+    assert decision["risk_eligible"] is False
+    assert decision["position_cap_pct"] == 0.0
 
 
 @pytest.mark.asyncio

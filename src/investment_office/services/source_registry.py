@@ -199,6 +199,7 @@ _POLICIES: Final = (
         UseScope.ANALYSIS_ALLOWED,
         SourcePriority.PRIMARY,
         "https://data.sec.gov/",
+        required_key_env_vars=("SEC_USER_AGENT",),
     ),
     _source(
         SourceId.FRED,

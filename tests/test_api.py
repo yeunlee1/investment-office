@@ -692,7 +692,8 @@ async def test_api_accepts_explicit_korean_market_and_keeps_markets_separate() -
             assert sources_response.status_code == 200
             sources = sources_response.json()["sources"]
             by_id = {item["policy"]["id"]: item for item in sources}
-            assert by_id["sec"]["status"]["analysis_ready"] is True
+            assert by_id["sec"]["status"]["analysis_ready"] is False
+            assert by_id["fred"]["status"]["analysis_ready"] is True
             assert by_id["data_go_kr"]["status"]["analysis_ready"] is False
             assert by_id["reuters"]["status"]["analysis_ready"] is False
 

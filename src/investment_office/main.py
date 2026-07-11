@@ -718,6 +718,22 @@ def create_app(
         configured_environment = {
             "DATA_GO_KR_SERVICE_KEY": active_settings.data_go_kr_service_key or "",
             "DART_API_KEY": active_settings.dart_api_key or "",
+            "SEC_USER_AGENT": active_settings.sec_user_agent or "",
+            "BOK_ECOS_API_KEY": active_settings.bok_ecos_api_key or "",
+            "TIINGO_API_TOKEN": active_settings.tiingo_api_token or "",
+            "MASSIVE_API_KEY": active_settings.massive_api_key or "",
+            "KRX_API_KEY": active_settings.krx_api_key or "",
+            "KIS_APP_KEY": active_settings.kis_app_key or "",
+            "KIS_APP_SECRET": active_settings.kis_app_secret or "",
+            "BIGKINDS_API_KEY": active_settings.bigkinds_api_key or "",
+            "NAVER_CLIENT_ID": active_settings.naver_client_id or "",
+            "NAVER_CLIENT_SECRET": active_settings.naver_client_secret or "",
+            "REUTERS_CONNECT_CLIENT_ID": (
+                active_settings.reuters_connect_client_id or ""
+            ),
+            "REUTERS_CONNECT_CLIENT_SECRET": (
+                active_settings.reuters_connect_client_secret or ""
+            ),
         }
         sources = []
         for policy in list_source_policies(include_disabled=True):

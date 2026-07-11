@@ -68,6 +68,7 @@ def test_common_macro_sources_are_available_to_both_markets() -> None:
 
 def test_required_keys_determine_configuration_readiness() -> None:
     fred = validate_source_configuration(SourceId.FRED, {})
+    sec = validate_source_configuration(SourceId.SEC, {})
     missing = validate_source_configuration(SourceId.KIS, {})
     configured = validate_source_configuration(
         SourceId.KIS,
@@ -77,6 +78,8 @@ def test_required_keys_determine_configuration_readiness() -> None:
 
     assert fred.ready is True
     assert fred.analysis_ready is True
+    assert sec.ready is False
+    assert sec.missing_key_env_vars == ("SEC_USER_AGENT",)
     assert missing.ready is False
     assert missing.missing_key_env_vars == ("KIS_APP_KEY", "KIS_APP_SECRET")
     assert configured.ready is True

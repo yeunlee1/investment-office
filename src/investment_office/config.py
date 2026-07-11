@@ -29,6 +29,17 @@ class Settings(BaseSettings):
     data_go_kr_service_key: str | None = Field(default=None, repr=False)
     dart_api_key: str | None = Field(default=None, repr=False)
     sec_user_agent: str | None = Field(default=None, repr=False)
+    bok_ecos_api_key: str | None = Field(default=None, repr=False)
+    tiingo_api_token: str | None = Field(default=None, repr=False)
+    massive_api_key: str | None = Field(default=None, repr=False)
+    krx_api_key: str | None = Field(default=None, repr=False)
+    kis_app_key: str | None = Field(default=None, repr=False)
+    kis_app_secret: str | None = Field(default=None, repr=False)
+    bigkinds_api_key: str | None = Field(default=None, repr=False)
+    naver_client_id: str | None = Field(default=None, repr=False)
+    naver_client_secret: str | None = Field(default=None, repr=False)
+    reuters_connect_client_id: str | None = Field(default=None, repr=False)
+    reuters_connect_client_secret: str | None = Field(default=None, repr=False)
     provider: str = "codex"
 
     @field_validator("host")

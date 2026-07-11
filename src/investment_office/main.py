@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, timedelta
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, Self, cast
 from uuid import UUID, uuid4
 
 import uvicorn
@@ -19,7 +19,14 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from starlette.middleware.base import RequestResponseEndpoint
@@ -45,14 +52,21 @@ from investment_office.services.decision_archive import (
     DecisionArchiveService,
 )
 from investment_office.services.event_broker import EventBroker
+from investment_office.services.instrument_identity import (
+    normalize_instrument,
+    resolve_stored_instrument,
+)
 from investment_office.services.market_data import YahooFinanceClient
 from investment_office.services.orchestrator import (
     DISCOVERY_ANALYSIS_THESIS,
     AnalysisProvider,
     AnalysisRunConflictError,
+    EODMarketDataClient,
     InvestmentCommittee,
     RiskFunction,
 )
+from investment_office.services.price_gateway import build_default_committee_price_gateway
+from investment_office.services.research_contracts import MarketId
 from investment_office.services.risk import assess_risk
 from investment_office.services.scheduled_analysis import (
     ScheduledAnalysis,
@@ -92,9 +106,10 @@ def _log_background_task_failure(completed: asyncio.Task[Any]) -> None:
 
 
 class AnalyzeRequest(BaseModel):
-    """사람이 제출하는 미국 종목 분석 요청."""
+    """사람이 제출하는 미국 또는 한국 종목 분석 요청."""
 
     model_config = ConfigDict(extra="forbid")
+    market: MarketId = MarketId.US
     ticker: str = Field(min_length=1, max_length=15, pattern=r"^[A-Z0-9][A-Z0-9.\-]{0,14}$")
     thesis: str | None = Field(default=None, max_length=5_000)
 
@@ -102,6 +117,11 @@ class AnalyzeRequest(BaseModel):
     @classmethod
     def normalize_ticker(cls, value: object) -> object:
         return value.strip().upper() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_market_ticker(self) -> Self:
+        self.ticker = normalize_instrument(self.market, self.ticker).symbol
+        return self
 
 
 class ScheduleAnalysisRequest(AnalyzeRequest):
@@ -111,9 +131,10 @@ class ScheduleAnalysisRequest(AnalyzeRequest):
 
 
 class DiscoveryScreenRequest(BaseModel):
-    """미국 대형주 스타터 유니버스의 1차 정량 선별 요청."""
+    """선택한 시장 스타터 유니버스의 1차 정량 선별 요청."""
 
     model_config = ConfigDict(extra="forbid")
+    market: MarketId = MarketId.US
     strategy: DiscoveryStrategy = DiscoveryStrategy.BALANCED
     limit: int = Field(default=8, ge=1, le=15)
 
@@ -122,6 +143,7 @@ class DiscoveryAnalyzeRequest(BaseModel):
     """1차 후보 중 최대 세 종목을 투자팀 심층 분석에 넘기는 요청."""
 
     model_config = ConfigDict(extra="forbid")
+    market: MarketId = MarketId.US
     tickers: list[str] = Field(min_length=1, max_length=3)
 
     @field_validator("tickers", mode="before")
@@ -131,13 +153,15 @@ class DiscoveryAnalyzeRequest(BaseModel):
             return value
         return [item.strip().upper() if isinstance(item, str) else item for item in value]
 
-    @field_validator("tickers")
-    @classmethod
-    def validate_tickers(cls, value: list[str]) -> list[str]:
-        normalized = [AnalyzeRequest(ticker=ticker).ticker for ticker in value]
+    @model_validator(mode="after")
+    def validate_tickers(self) -> Self:
+        normalized = [
+            normalize_instrument(self.market, ticker).symbol for ticker in self.tickers
+        ]
         if len(normalized) != len(set(normalized)):
             raise ValueError("tickers에 중복 종목을 넣을 수 없습니다.")
-        return normalized
+        self.tickers = normalized
+        return self
 
 
 class ReviewRequest(BaseModel):
@@ -220,7 +244,7 @@ def create_app(
     settings: Settings | None = None,
     storage: Storage | None = None,
     provider: AnalysisProvider | None = None,
-    market_data: YahooFinanceClient | None = None,
+    market_data: EODMarketDataClient | None = None,
     risk_function: RiskFunction = assess_risk,
 ) -> FastAPI:
     """운영 의존성 또는 테스트 대역으로 애플리케이션을 구성한다."""
@@ -237,8 +261,12 @@ def create_app(
             command=resolved_settings.codex_command,
             timeout_seconds=resolved_settings.codex_timeout_seconds,
         )
-        resolved_market_data = market_data or YahooFinanceClient(
-            timeout_seconds=resolved_settings.market_data_timeout_seconds
+        resolved_market_data = market_data or build_default_committee_price_gateway(
+            yahoo_client=YahooFinanceClient(
+                timeout_seconds=resolved_settings.market_data_timeout_seconds
+            ),
+            korea_service_key=resolved_settings.data_go_kr_service_key,
+            timeout_seconds=resolved_settings.market_data_timeout_seconds,
         )
         broker = EventBroker()
         app.state.committee = InvestmentCommittee(
@@ -407,12 +435,20 @@ def create_app(
     def build_schedule_payload(request: Request, item: ScheduledAnalysis) -> dict[str, Any]:
         payload = item.model_dump(mode="json")
         candidate = committee(request).storage.get_candidate(item.candidate_id)
-        payload["thesis"] = candidate.thesis if candidate is not None else None
+        if candidate is not None:
+            instrument = resolve_stored_instrument(candidate.ticker, candidate.attributes)
+            payload["ticker"] = instrument.symbol
+            payload["market"] = instrument.market.value
+            payload["canonical_id"] = instrument.canonical_id
+            payload["thesis"] = candidate.thesis
+        else:
+            payload["thesis"] = None
         return payload
 
     def find_matching_active_schedule(
         request: Request,
         *,
+        market: MarketId,
         ticker: str,
         thesis: str | None,
         scheduled_for: AwareDatetime,
@@ -425,10 +461,17 @@ def create_app(
         for item in scheduled_analyses(request).list_schedules():
             if item.status not in active_statuses:
                 continue
-            if item.ticker != ticker or item.scheduled_for != scheduled_for:
+            if item.scheduled_for != scheduled_for:
                 continue
             candidate = committee(request).storage.get_candidate(item.candidate_id)
-            if candidate is not None and candidate.thesis == thesis:
+            if candidate is None:
+                continue
+            instrument = resolve_stored_instrument(candidate.ticker, candidate.attributes)
+            if (
+                instrument.market is market
+                and instrument.symbol == ticker
+                and candidate.thesis == thesis
+            ):
                 return item
         return None
 
@@ -668,6 +711,7 @@ def create_app(
             run = await service.create_analysis(
                 payload.ticker,
                 payload.thesis,
+                market=payload.market,
                 workflow="manual",
             )
         except ValueError as exc:
@@ -685,6 +729,7 @@ def create_app(
             result = await candidate_discovery(request).screen(
                 strategy=payload.strategy,
                 limit=payload.limit,
+                market=payload.market,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -703,6 +748,7 @@ def create_app(
                 run = await service.create_analysis(
                     ticker,
                     DISCOVERY_ANALYSIS_THESIS,
+                    market=payload.market,
                     workflow="discovery",
                     discovery_batch_id=discovery_batch_id,
                 )
@@ -717,6 +763,7 @@ def create_app(
                 {
                     "run_id": str(run.id),
                     "ticker": ticker,
+                    "market": payload.market.value,
                     "status": run.status.value,
                     "workflow": "discovery",
                     "discovery_batch_id": discovery_batch_id,
@@ -755,6 +802,7 @@ def create_app(
         async with creation_lock:
             existing = find_matching_active_schedule(
                 request,
+                market=payload.market,
                 ticker=payload.ticker,
                 thesis=payload.thesis,
                 scheduled_for=payload.scheduled_for,
@@ -768,6 +816,7 @@ def create_app(
             run = await investment_service.create_analysis(
                 payload.ticker,
                 payload.thesis,
+                market=payload.market,
                 workflow="scheduled",
             )
             try:

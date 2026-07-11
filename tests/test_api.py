@@ -656,6 +656,40 @@ async def test_discovery_api_screens_then_runs_selected_candidates_with_human_ga
 
 
 @pytest.mark.asyncio
+async def test_api_accepts_explicit_korean_market_and_keeps_markets_separate() -> None:
+    app, _ = make_app()
+
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+            analysis = await client.post(
+                "/api/analyze",
+                json={"market": "kr", "ticker": "005930"},
+            )
+            assert analysis.status_code == 202
+            run = analysis.json()["run"]
+            assert run["market"] == "kr"
+            assert run["ticker"] == "005930"
+            assert run["canonical_id"] == "kr:005930"
+
+            invalid = await client.post(
+                "/api/analyze",
+                json={"market": "kr", "ticker": "AAPL"},
+            )
+            assert invalid.status_code == 422
+
+            screened = await client.post(
+                "/api/discoveries/screen",
+                json={"market": "kr", "strategy": "balanced", "limit": 3},
+            )
+            assert screened.status_code == 200
+            discovery = screened.json()["discovery"]
+            assert discovery["market"] == "kr"
+            assert discovery["universe_size"] == 30
+            assert all(item["market"] == "kr" for item in discovery["candidates"])
+
+
+@pytest.mark.asyncio
 async def test_run_list_filters_ui_status_and_returns_unlimited_summary() -> None:
     app, _ = make_app()
 

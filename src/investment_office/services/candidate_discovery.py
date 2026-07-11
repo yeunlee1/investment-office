@@ -9,7 +9,9 @@ from typing import Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from investment_office.services.instrument_identity import normalize_instrument
 from investment_office.services.market_data import EODSnapshot
+from investment_office.services.research_contracts import MarketId
 
 SAFETY_NOTICE = (
     "이 결과는 매수 추천이 아니라 심층 검토 후보를 좁히는 저비용 1차 스크리닝입니다."
@@ -21,6 +23,7 @@ class UniverseMember(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    market: MarketId = MarketId.US
     ticker: str = Field(min_length=1, max_length=10)
     sector: str = Field(min_length=1, max_length=80)
 
@@ -56,6 +59,39 @@ STARTER_UNIVERSE: tuple[UniverseMember, ...] = (
     UniverseMember(ticker="CAT", sector="industrials"),
     UniverseMember(ticker="XOM", sector="energy"),
     UniverseMember(ticker="CVX", sector="energy"),
+)
+
+KR_STARTER_UNIVERSE: tuple[UniverseMember, ...] = (
+    UniverseMember(market=MarketId.KR, ticker="005930", sector="semiconductors"),
+    UniverseMember(market=MarketId.KR, ticker="000660", sector="semiconductors"),
+    UniverseMember(market=MarketId.KR, ticker="005380", sector="automobiles"),
+    UniverseMember(market=MarketId.KR, ticker="000270", sector="automobiles"),
+    UniverseMember(market=MarketId.KR, ticker="035420", sector="internet"),
+    UniverseMember(market=MarketId.KR, ticker="035720", sector="internet"),
+    UniverseMember(market=MarketId.KR, ticker="207940", sector="biotechnology"),
+    UniverseMember(market=MarketId.KR, ticker="068270", sector="biotechnology"),
+    UniverseMember(market=MarketId.KR, ticker="373220", sector="batteries"),
+    UniverseMember(market=MarketId.KR, ticker="051910", sector="chemicals"),
+    UniverseMember(market=MarketId.KR, ticker="006400", sector="batteries"),
+    UniverseMember(market=MarketId.KR, ticker="105560", sector="financials"),
+    UniverseMember(market=MarketId.KR, ticker="055550", sector="financials"),
+    UniverseMember(market=MarketId.KR, ticker="086790", sector="financials"),
+    UniverseMember(market=MarketId.KR, ticker="316140", sector="financials"),
+    UniverseMember(market=MarketId.KR, ticker="012330", sector="auto_parts"),
+    UniverseMember(market=MarketId.KR, ticker="028260", sector="industrials"),
+    UniverseMember(market=MarketId.KR, ticker="009150", sector="electronics"),
+    UniverseMember(market=MarketId.KR, ticker="034730", sector="holding_companies"),
+    UniverseMember(market=MarketId.KR, ticker="096770", sector="energy"),
+    UniverseMember(market=MarketId.KR, ticker="015760", sector="utilities"),
+    UniverseMember(market=MarketId.KR, ticker="017670", sector="telecommunications"),
+    UniverseMember(market=MarketId.KR, ticker="030200", sector="telecommunications"),
+    UniverseMember(market=MarketId.KR, ticker="032830", sector="insurance"),
+    UniverseMember(market=MarketId.KR, ticker="010130", sector="materials"),
+    UniverseMember(market=MarketId.KR, ticker="066570", sector="electronics"),
+    UniverseMember(market=MarketId.KR, ticker="003670", sector="materials"),
+    UniverseMember(market=MarketId.KR, ticker="005490", sector="steel"),
+    UniverseMember(market=MarketId.KR, ticker="018260", sector="information_technology"),
+    UniverseMember(market=MarketId.KR, ticker="042700", sector="semiconductor_equipment"),
 )
 
 
@@ -103,6 +139,7 @@ class CandidateDiscoveryItem(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    market: MarketId = MarketId.US
     rank: int | None = Field(default=None, ge=1)
     score: float = Field(ge=0, le=100)
     ticker: str
@@ -119,6 +156,7 @@ class CandidateDiscoveryResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    market: MarketId = MarketId.US
     strategy: DiscoveryStrategy
     safety_notice: str = SAFETY_NOTICE
     universe_size: int = Field(ge=1)
@@ -162,11 +200,21 @@ class CandidateDiscoveryService:
         self.market_data = market_data
         self.max_concurrency = max_concurrency
         self.universe = tuple(universe)
+        grouped_universes: dict[MarketId, tuple[UniverseMember, ...]] = {
+            market: tuple(member for member in self.universe if member.market is market)
+            for market in MarketId
+        }
+        self.universes = {
+            market: members for market, members in grouped_universes.items() if members
+        }
+        if universe is STARTER_UNIVERSE:
+            self.universes[MarketId.KR] = KR_STARTER_UNIVERSE
 
     async def screen(
         self,
         strategy: DiscoveryStrategy | str = DiscoveryStrategy.BALANCED,
         limit: int = 10,
+        market: MarketId | str = MarketId.US,
     ) -> CandidateDiscoveryResult:
         """유니버스를 병렬 조회하고 결정론적 점수순으로 심층 검토 후보를 반환한다."""
 
@@ -177,12 +225,19 @@ class CandidateDiscoveryService:
             raise ValueError(f"strategy는 {choices} 중 하나여야 합니다.") from exc
         if isinstance(limit, bool) or limit < 1:
             raise ValueError("limit은 1 이상이어야 합니다.")
+        try:
+            selected_market = MarketId(market)
+        except ValueError as exc:
+            raise ValueError("market은 us 또는 kr이어야 합니다.") from exc
+        selected_universe = self.universes.get(selected_market)
+        if not selected_universe:
+            raise ValueError(f"{selected_market.value} 시장 유니버스가 구성되지 않았습니다.")
 
         semaphore = asyncio.Semaphore(self.max_concurrency)
         items = await asyncio.gather(
             *(
                 self._screen_member(member, selected_strategy, semaphore)
-                for member in self.universe
+                for member in selected_universe
             )
         )
         scored = sorted(
@@ -196,8 +251,9 @@ class CandidateDiscoveryService:
         excluded.extend(item for item in items if item.eod is None)
         excluded.sort(key=lambda item: (item.rank is None, item.rank or 0, item.ticker))
         return CandidateDiscoveryResult(
+            market=selected_market,
             strategy=selected_strategy,
-            universe_size=len(self.universe),
+            universe_size=len(selected_universe),
             evaluated_count=len(scored),
             qualified_count=len(qualified),
             omitted_count=max(0, len(qualified) - len(candidates)),
@@ -213,7 +269,11 @@ class CandidateDiscoveryService:
     ) -> CandidateDiscoveryItem:
         async with semaphore:
             try:
-                snapshot = await self.market_data.fetch_eod_snapshot(member.ticker)
+                storage_ticker = normalize_instrument(
+                    member.market,
+                    member.ticker,
+                ).storage_ticker
+                snapshot = await self.market_data.fetch_eod_snapshot(storage_ticker)
             except Exception as exc:
                 return self._failed_item(member, exc)
 
@@ -228,6 +288,7 @@ class CandidateDiscoveryService:
             if gaps:
                 reason = f"{reason} Yahoo 세부 정보는 {gaps}"
             return CandidateDiscoveryItem(
+                market=member.market,
                 score=0,
                 ticker=member.ticker,
                 sector=member.sector,
@@ -246,6 +307,7 @@ class CandidateDiscoveryService:
         if verdict == DiscoveryVerdict.EXCLUDE and metrics.average_volume_20d < 1_000_000:
             reasons.insert(0, "20일 평균 거래량이 100만 주 미만이라 유동성 기준에서 제외했습니다.")
         return CandidateDiscoveryItem(
+            market=member.market,
             score=score,
             ticker=member.ticker,
             sector=member.sector,
@@ -260,6 +322,7 @@ class CandidateDiscoveryService:
     def _failed_item(member: UniverseMember, exc: Exception) -> CandidateDiscoveryItem:
         detail = str(exc).strip() or exc.__class__.__name__
         return CandidateDiscoveryItem(
+            market=member.market,
             score=0,
             ticker=member.ticker,
             sector=member.sector,

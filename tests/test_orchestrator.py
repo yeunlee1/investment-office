@@ -183,6 +183,29 @@ async def test_analysis_workflow_metadata_is_stored_and_exposed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_korean_analysis_persists_market_identity_without_schema_change() -> None:
+    committee, storage, _, _ = make_committee()
+
+    run = await committee.create_analysis("005930", market="kr")
+
+    candidate = storage.get_candidate(run.candidate_id)
+    assert candidate is not None
+    assert candidate.ticker == "KR-005930"
+    assert candidate.attributes == {
+        "market": "kr",
+        "local_symbol": "005930",
+        "canonical_id": "kr:005930",
+        "currency": "KRW",
+        "data_contract_version": "1.0",
+    }
+    assert run.configuration["market"] == "kr"
+    payload = committee.build_run_payload(run.id)
+    assert payload["ticker"] == "005930"
+    assert payload["market"] == "kr"
+    assert payload["canonical_id"] == "kr:005930"
+
+
+@pytest.mark.asyncio
 async def test_legacy_workflow_inference_is_conservative() -> None:
     committee, storage, _, _ = make_committee()
 

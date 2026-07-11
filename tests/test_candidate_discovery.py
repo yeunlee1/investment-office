@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime
 import pytest
 
 from investment_office.services.candidate_discovery import (
+    KR_STARTER_UNIVERSE,
     SAFETY_NOTICE,
     STARTER_UNIVERSE,
     CandidateDiscoveryService,
@@ -15,6 +16,7 @@ from investment_office.services.candidate_discovery import (
     UniverseMember,
 )
 from investment_office.services.market_data import EODSnapshot, YahooFinanceError
+from investment_office.services.research_contracts import MarketId
 
 
 def snapshot(
@@ -84,6 +86,24 @@ def test_starter_universe_is_explicit_unique_and_sector_diversified() -> None:
     assert 24 <= len(STARTER_UNIVERSE) <= 36
     assert len(tickers) == len(set(tickers))
     assert len(sectors) >= 8
+    assert len(KR_STARTER_UNIVERSE) == 30
+    assert all(member.market is MarketId.KR for member in KR_STARTER_UNIVERSE)
+
+
+@pytest.mark.asyncio
+async def test_korean_screen_uses_canonical_storage_ticker() -> None:
+    universe = (
+        UniverseMember(market=MarketId.KR, ticker="005930", sector="semiconductors"),
+    )
+    market = FakeMarketData({"KR-005930": snapshot("005930")})
+    service = CandidateDiscoveryService(market_data=market, universe=universe)
+
+    result = await service.screen(market=MarketId.KR, limit=1)
+
+    assert market.calls == ["KR-005930"]
+    assert result.market is MarketId.KR
+    assert result.candidates[0].ticker == "005930"
+    assert result.candidates[0].market is MarketId.KR
 
 
 @pytest.mark.asyncio

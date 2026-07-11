@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     codex_timeout_seconds: float = Field(default=240.0, gt=0, le=1_800)
     max_parallel_agents: int = Field(default=3, ge=1, le=6)
     market_data_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
+    data_go_kr_service_key: str | None = Field(default=None, repr=False)
+    dart_api_key: str | None = Field(default=None, repr=False)
+    sec_user_agent: str | None = Field(default=None, repr=False)
     provider: str = "codex"
 
     @field_validator("host")

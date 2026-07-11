@@ -28,7 +28,13 @@ from investment_office.domain import (
     utc_now,
 )
 from investment_office.services.event_broker import EventBroker
-from investment_office.services.market_data import EODSnapshot, YahooFinanceClient
+from investment_office.services.instrument_identity import (
+    InstrumentIdentity,
+    normalize_instrument,
+    resolve_stored_instrument,
+)
+from investment_office.services.market_data import EODSnapshot
+from investment_office.services.research_contracts import MarketId
 from investment_office.services.risk import RiskAssessment, assess_risk
 from investment_office.storage import Storage
 
@@ -53,6 +59,10 @@ class AnalysisProvider(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class EODMarketDataClient(Protocol):
+    async def fetch_eod_snapshot(self, ticker: str) -> EODSnapshot: ...
+
+
 RiskFunction = Callable[[EODSnapshot, dict[str, Any]], RiskAssessment]
 
 
@@ -68,7 +78,7 @@ class InvestmentCommittee:
         *,
         storage: Storage,
         provider: AnalysisProvider,
-        market_data: YahooFinanceClient,
+        market_data: EODMarketDataClient,
         broker: EventBroker,
         max_parallel_agents: int = 3,
         risk_function: RiskFunction = assess_risk,
@@ -85,6 +95,7 @@ class InvestmentCommittee:
         ticker: str,
         thesis: str | None = None,
         *,
+        market: MarketId | str = MarketId.US,
         workflow: AnalysisWorkflow = "manual",
         discovery_batch_id: str | None = None,
     ) -> AnalysisRun:
@@ -96,13 +107,29 @@ class InvestmentCommittee:
         if discovery_batch_id is not None and not normalized_batch_id:
             raise ValueError("discovery_batch_id는 공백일 수 없습니다.")
 
-        candidate = Candidate(ticker=ticker, thesis=thesis, source=CandidateSource.USER)
+        instrument = normalize_instrument(market, ticker)
+        candidate = Candidate(
+            ticker=instrument.storage_ticker,
+            thesis=thesis,
+            source=CandidateSource.USER,
+            attributes={
+                "market": instrument.market.value,
+                "local_symbol": instrument.symbol,
+                "canonical_id": instrument.canonical_id,
+                "currency": instrument.currency,
+                "data_contract_version": "1.0",
+            },
+        )
         self.storage.save_candidate(candidate)
         configuration: JsonDict = {
             "execution": "human_in_the_loop",
             "auto_trade": False,
             "agent_count": 6,
             "workflow": workflow,
+            "market": instrument.market.value,
+            "local_symbol": instrument.symbol,
+            "canonical_id": instrument.canonical_id,
+            "data_contract_version": "1.0",
         }
         if normalized_batch_id is not None:
             configuration["discovery_batch_id"] = normalized_batch_id
@@ -117,13 +144,18 @@ class InvestmentCommittee:
                 analysis_run_id=run.id,
                 kind=SnapshotKind.INPUT,
                 data=JSON_DICT_ADAPTER.validate_python(
-                    {"ticker": candidate.ticker, "thesis": candidate.thesis}
+                    {
+                        "ticker": instrument.symbol,
+                        "market": instrument.market.value,
+                        "canonical_id": instrument.canonical_id,
+                        "thesis": candidate.thesis,
+                    }
                 ),
             )
         )
         await self._record_event(
             EventType.CANDIDATE_CREATED,
-            f"{candidate.ticker} 후보가 접수되었습니다.",
+            f"{instrument.symbol} 후보가 접수되었습니다.",
             candidate=candidate,
             run=run,
             stream_type="analysis",
@@ -192,7 +224,10 @@ class InvestmentCommittee:
         )
 
         try:
-            market_snapshot = await self.market_data.fetch_eod_snapshot(candidate.ticker)
+            instrument = self._candidate_instrument(candidate)
+            market_snapshot = await self.market_data.fetch_eod_snapshot(
+                instrument.storage_ticker
+            )
             market_payload = market_snapshot.model_dump(mode="json")
             self.storage.save_snapshot(
                 Snapshot(
@@ -407,6 +442,7 @@ class InvestmentCommittee:
         review = reviews[0] if reviews else None
         decision = decisions[0].data if decisions else None
         workflow, discovery_batch_id = self._workflow_metadata(run, candidate)
+        instrument = self._candidate_instrument(candidate)
 
         status = run.status.value
         if run.status is AnalysisRunStatus.COMPLETED:
@@ -425,7 +461,9 @@ class InvestmentCommittee:
         return {
             "run_id": str(run.id),
             "candidate_id": str(candidate.id),
-            "ticker": candidate.ticker,
+            "ticker": instrument.symbol,
+            "market": instrument.market.value,
+            "canonical_id": instrument.canonical_id,
             "thesis": candidate.thesis,
             "workflow": workflow,
             "discovery_batch_id": discovery_batch_id,
@@ -519,12 +557,13 @@ class InvestmentCommittee:
             payload={"role": role.value, "status": "running"},
         )
         try:
+            instrument = self._candidate_instrument(candidate)
             if self._role_input_is_missing(role, snapshot):
-                result = self._data_gap_result(role, candidate.ticker)
+                result = self._data_gap_result(role, instrument.symbol)
             else:
                 async with self._semaphore:
                     result = await self.provider.analyze(
-                        role.value, candidate.ticker, snapshot, context
+                        role.value, instrument.symbol, snapshot, context
                     )
             validated = JSON_DICT_ADAPTER.validate_python(result)
             evidence = [
@@ -693,6 +732,7 @@ class InvestmentCommittee:
         chairman: dict[str, Any],
         risk: dict[str, Any],
     ) -> dict[str, Any]:
+        instrument = InvestmentCommittee._candidate_instrument(candidate)
         stance = str(chairman.get("stance", "neutral"))
         risk_action = str(risk.get("action", "avoid")).strip().casefold()
         raw_position_cap = risk.get("position_cap_pct", 0.0)
@@ -728,7 +768,9 @@ class InvestmentCommittee:
         risks = list(dict.fromkeys(risks))
         data_gaps = InvestmentCommittee._merge_data_gaps(chairman, risk)
         return {
-            "ticker": candidate.ticker,
+            "ticker": instrument.symbol,
+            "market": instrument.market.value,
+            "canonical_id": instrument.canonical_id,
             "recommendation": recommendation,
             "stance": stance,
             "confidence": chairman.get("confidence"),
@@ -758,6 +800,10 @@ class InvestmentCommittee:
                 if isinstance(item, str) and item.strip()
             )
         return list(dict.fromkeys(data_gaps))
+
+    @staticmethod
+    def _candidate_instrument(candidate: Candidate) -> InstrumentIdentity:
+        return resolve_stored_instrument(candidate.ticker, candidate.attributes)
 
     @staticmethod
     def _status_message(status: str) -> str:

@@ -96,6 +96,11 @@ class DomainModel(BaseModel):
 
 class Evidence(DomainModel):
     title: str = Field(min_length=1, max_length=300)
+    fact_id: str | None = Field(
+        default=None,
+        max_length=128,
+        pattern=r"^[a-z0-9][a-z0-9._:-]{0,127}$",
+    )
     url: AnyHttpUrl | None = None
     published_at: AwareDatetime | None = None
     excerpt: str | None = Field(default=None, max_length=2_000)

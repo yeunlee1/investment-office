@@ -907,7 +907,12 @@ class CommitteeBroker:
             title = str(raw_item.get("claim", "근거")).strip() or "근거"
             evidence.append(
                 Evidence.model_validate(
-                    {"title": title, "url": raw_item.get("source_url")}
+                    {
+                        "title": title,
+                        "fact_id": raw_item.get("fact_id"),
+                        "url": raw_item.get("source_url"),
+                        "published_at": raw_item.get("published_at"),
+                    }
                 )
             )
         return evidence
@@ -925,9 +930,9 @@ class CommitteeBroker:
     @staticmethod
     def _deduplicate_evidence(evidence: list[Evidence]) -> list[Evidence]:
         result: list[Evidence] = []
-        seen: set[tuple[str, str | None]] = set()
+        seen: set[tuple[str, str | None, str | None]] = set()
         for item in evidence:
-            key = (item.title, str(item.url) if item.url else None)
+            key = (item.title, item.fact_id, str(item.url) if item.url else None)
             if key in seen:
                 continue
             seen.add(key)

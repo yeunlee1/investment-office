@@ -567,7 +567,12 @@ class InvestmentCommittee:
                     )
             validated = JSON_DICT_ADAPTER.validate_python(result)
             evidence = [
-                Evidence(title=str(item.get("claim", "근거")), url=item.get("source_url"))
+                Evidence(
+                    title=str(item.get("claim", "근거")),
+                    fact_id=item.get("fact_id"),
+                    url=item.get("source_url"),
+                    published_at=item.get("published_at"),
+                )
                 for item in result.get("evidence", [])
                 if isinstance(item, dict)
             ]

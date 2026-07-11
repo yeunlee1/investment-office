@@ -86,6 +86,7 @@ class FakeProvider:
             "evidence": [
                 {
                     "claim": "입력 스냅샷의 종가를 확인했다.",
+                    "fact_id": "price:test:close",
                     "source_url": snapshot["source_url"],
                     "published_at": None,
                 }
@@ -281,6 +282,7 @@ async def test_six_agent_analysis_then_human_review_state(
         AgentRole.RISK_MANAGER,
     }
     outputs_by_role = {output.role: output for output in outputs}
+    assert outputs_by_role[AgentRole.TECHNICAL].evidence[0].fact_id == "price:test:close"
     for role in (AgentRole.FUNDAMENTAL, AgentRole.NEWS):
         output = outputs_by_role[role]
         assert output.confidence == 0.0

@@ -65,6 +65,7 @@ class FakeProvider:
             "evidence": [
                 {
                     "claim": "시장 스냅샷을 다시 확인했다.",
+                    "fact_id": "price:test:close",
                     "source_url": SOURCE_URL,
                     "published_at": None,
                 }

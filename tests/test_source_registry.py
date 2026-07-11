@@ -46,7 +46,6 @@ def test_market_and_domain_query_is_priority_ordered() -> None:
         SourceId.KRX,
         SourceId.DATA_GO_KR,
         SourceId.KIS,
-        SourceId.YAHOO_FINANCE,
     }
     assert [source.priority for source in sources] == sorted(source.priority for source in sources)
 
@@ -61,14 +60,30 @@ def test_common_macro_sources_are_available_to_both_markets() -> None:
         for source in list_source_policies(market=Market.KR, domain=DataDomain.MACRO)
     }
 
-    assert {SourceId.FRED, SourceId.US_TREASURY, SourceId.CBOE} <= us_ids
-    assert {SourceId.FRED, SourceId.US_TREASURY, SourceId.CBOE} <= kr_ids
+    common_sources = {
+        SourceId.BLS,
+        SourceId.US_TREASURY,
+    }
+    assert common_sources <= us_ids
+    assert common_sources <= kr_ids
+    assert SourceId.FRED not in us_ids
+    assert SourceId.FRED not in kr_ids
+    assert SourceId.FEDERAL_RESERVE_BOARD not in us_ids
+    assert SourceId.FEDERAL_RESERVE_BOARD not in kr_ids
+    assert SourceId.CBOE not in us_ids
+    assert SourceId.CBOE not in kr_ids
     assert SourceId.BOK_ECOS not in us_ids
     assert SourceId.BOK_ECOS in kr_ids
 
 
 def test_required_keys_determine_configuration_readiness() -> None:
     fred = validate_source_configuration(SourceId.FRED, {})
+    bls = validate_source_configuration(SourceId.BLS, {}, require_analysis=True)
+    federal_reserve = validate_source_configuration(
+        SourceId.FEDERAL_RESERVE_BOARD,
+        {},
+        require_analysis=True,
+    )
     sec = validate_source_configuration(SourceId.SEC, {})
     missing = validate_source_configuration(SourceId.KIS, {})
     configured = validate_source_configuration(
@@ -77,8 +92,12 @@ def test_required_keys_determine_configuration_readiness() -> None:
         require_analysis=True,
     )
 
-    assert fred.ready is True
-    assert fred.analysis_ready is True
+    assert fred.ready is False
+    assert fred.analysis_ready is False
+    assert bls.ready is True
+    assert bls.analysis_ready is True
+    assert federal_reserve.ready is False
+    assert federal_reserve.analysis_ready is False
     assert sec.ready is False
     assert sec.missing_key_env_vars == ("SEC_USER_AGENT",)
     assert missing.ready is False
@@ -122,23 +141,70 @@ def test_reuters_is_disabled_until_ai_rights_are_confirmed() -> None:
     assert any("AI 사용 권한" in error for error in validation.errors)
 
 
-def test_yahoo_is_low_trust_fallback_with_cross_check_warning() -> None:
+def test_yahoo_is_disabled_until_ai_rights_are_confirmed() -> None:
     policy = get_source_policy(SourceId.YAHOO_FINANCE)
-    validation = validate_source_configuration(SourceId.YAHOO_FINANCE, {})
+    validation = validate_source_configuration(
+        SourceId.YAHOO_FINANCE,
+        {},
+        enabled=True,
+        require_analysis=True,
+    )
 
     assert policy.trust_level is TrustLevel.LOW
-    assert policy.priority is SourcePriority.FALLBACK
+    assert policy.priority is SourcePriority.DISABLED
     assert policy.markets == frozenset({Market.US, Market.KR})
-    assert validation.ready is True
-    assert validation.warnings
+    assert policy.enabled_by_default is False
+    assert policy.ai_use_rights_confirmed is False
+    assert validation.ready is False
+    assert any("AI 사용 권한" in error for error in validation.errors)
+
+
+def test_fred_is_disabled_until_ai_rights_are_confirmed() -> None:
+    policy = get_source_policy(SourceId.FRED)
+    validation = validate_source_configuration(
+        SourceId.FRED,
+        {},
+        enabled=True,
+        require_analysis=True,
+    )
+
+    assert policy.enabled_by_default is False
+    assert policy.ai_use_rights_confirmed is False
+    assert policy.use_scope is UseScope.DISABLED_PENDING_LICENSE
+    assert policy.priority is SourcePriority.DISABLED
+    assert validation.ready is False
+    assert any("AI 사용 권한" in error for error in validation.errors)
+
+
+def test_cboe_is_disabled_until_ai_rights_are_confirmed() -> None:
+    policy = get_source_policy(SourceId.CBOE)
+    validation = validate_source_configuration(
+        SourceId.CBOE,
+        {},
+        enabled=True,
+        require_analysis=True,
+    )
+
+    assert policy.enabled_by_default is False
+    assert policy.ai_use_rights_confirmed is False
+    assert policy.use_scope is UseScope.DISABLED_PENDING_LICENSE
+    assert policy.priority is SourcePriority.DISABLED
+    assert validation.ready is False
+    assert any("AI 사용 권한" in error for error in validation.errors)
 
 
 def test_disabled_sources_are_hidden_from_default_queries() -> None:
-    default_ids = {source.id for source in list_source_policies(domain=DataDomain.NEWS)}
+    default_ids = {source.id for source in list_source_policies()}
     all_ids = {
         source.id
-        for source in list_source_policies(domain=DataDomain.NEWS, include_disabled=True)
+        for source in list_source_policies(include_disabled=True)
     }
 
     assert SourceId.REUTERS not in default_ids
+    assert SourceId.FRED not in default_ids
+    assert SourceId.YAHOO_FINANCE not in default_ids
+    assert SourceId.CBOE not in default_ids
     assert SourceId.REUTERS in all_ids
+    assert SourceId.FRED in all_ids
+    assert SourceId.YAHOO_FINANCE in all_ids
+    assert SourceId.CBOE in all_ids

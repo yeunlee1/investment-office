@@ -347,11 +347,11 @@ class KoreaPublicDataPriceProvider:
         except httpx.HTTPStatusError as exc:
             raise PriceProviderResponseError(
                 f"한국 주식 가격 요청이 HTTP {exc.response.status_code}로 실패했습니다."
-            ) from exc
-        except httpx.RequestError as exc:
+            ) from None
+        except httpx.RequestError:
             raise PriceProviderResponseError(
                 "한국 주식 가격 요청 중 네트워크 오류가 발생했습니다."
-            ) from exc
+            ) from None
         return response
 
     def _aware_now(self) -> datetime:
@@ -531,33 +531,23 @@ def build_default_price_gateway(
     timeout_seconds: float = 20.0,
     now_factory: Callable[[], datetime] | None = None,
 ) -> MarketPriceGateway:
-    """미국 Tiingo 우선·Yahoo 대체와 한국 공공데이터 게이트웨이를 만든다."""
+    """권리가 확인된 미국 Tiingo와 한국 공공데이터 게이트웨이를 만든다."""
+
+    del yahoo_client, korea_yahoo_client
 
     return MarketPriceGateway(
         (
-            FallbackPriceProvider(
-                TiingoPriceProvider(
-                    tiingo_api_token,
-                    timeout_seconds=timeout_seconds,
-                    client=tiingo_client,
-                    now_factory=now_factory,
-                ),
-                YahooPriceProvider(yahoo_client),
+            TiingoPriceProvider(
+                tiingo_api_token,
+                timeout_seconds=timeout_seconds,
+                client=tiingo_client,
+                now_factory=now_factory,
             ),
-            FallbackPriceProvider(
-                KoreaPublicDataPriceProvider(
-                    korea_service_key,
-                    timeout_seconds=timeout_seconds,
-                    client=korea_client,
-                    now_factory=now_factory,
-                ),
-                KoreaYahooPriceProvider(
-                    timeout_seconds=timeout_seconds,
-                    client=korea_yahoo_client,
-                    now_factory=now_factory,
-                ),
-                fallback_on=(MissingPriceApiKeyError, PriceProviderResponseError),
-                fallback_gap=_KOREA_YAHOO_FALLBACK_GAP,
+            KoreaPublicDataPriceProvider(
+                korea_service_key,
+                timeout_seconds=timeout_seconds,
+                client=korea_client,
+                now_factory=now_factory,
             ),
         )
     )

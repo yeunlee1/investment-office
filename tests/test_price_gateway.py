@@ -1,6 +1,7 @@
 # 미국과 한국 가격 게이트웨이의 선택, 변환, 실패 경계를 네트워크 없이 검증한다
 from __future__ import annotations
 
+import traceback
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -244,8 +245,12 @@ def _tiingo_prices(
 
 
 @pytest.mark.asyncio
-async def test_default_gateway_routes_us_to_existing_yahoo_client() -> None:
+async def test_default_gateway_does_not_use_yahoo_without_tiingo_token() -> None:
+    calls = 0
+
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
         return httpx.Response(200, json=_yahoo_payload(), request=request)
 
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -253,14 +258,12 @@ async def test_default_gateway_routes_us_to_existing_yahoo_client() -> None:
         gateway = build_default_price_gateway(
             yahoo_client=YahooFinanceClient(client=http_client, now_factory=lambda: NOW)
         )
-        snapshot = await gateway.fetch_eod_snapshot(_instrument(MarketId.US))
+        with pytest.raises(MissingPriceApiKeyError, match="Tiingo"):
+            await gateway.fetch_eod_snapshot(_instrument(MarketId.US))
     finally:
         await http_client.aclose()
 
-    assert snapshot.ticker == "AAPL"
-    assert snapshot.currency == "USD"
-    assert snapshot.current_close == 101.0
-    assert any("Yahoo Finance 대체 자료" in gap for gap in snapshot.data_gaps)
+    assert calls == 0
 
 
 @pytest.mark.asyncio
@@ -421,11 +424,15 @@ async def test_tiingo_provider_rejects_metadata_symbol_mismatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_default_gateway_falls_back_to_yahoo_after_tiingo_failure() -> None:
+async def test_default_gateway_does_not_fallback_to_yahoo_after_tiingo_failure() -> None:
+    yahoo_calls = 0
+
     def tiingo_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, request=request)
 
     def yahoo_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal yahoo_calls
+        yahoo_calls += 1
         return httpx.Response(200, json=_yahoo_payload(), request=request)
 
     tiingo_client = httpx.AsyncClient(transport=httpx.MockTransport(tiingo_handler))
@@ -440,14 +447,13 @@ async def test_default_gateway_falls_back_to_yahoo_after_tiingo_failure() -> Non
             ),
             now_factory=lambda: NOW,
         )
-        snapshot = await gateway.fetch_eod_snapshot(_instrument(MarketId.US))
+        with pytest.raises(PriceProviderResponseError, match="HTTP 503"):
+            await gateway.fetch_eod_snapshot(_instrument(MarketId.US))
     finally:
         await tiingo_client.aclose()
         await yahoo_http_client.aclose()
 
-    assert snapshot.current_close == 101.0
-    assert snapshot.source_url.startswith("https://query1.finance.yahoo.com/")
-    assert any("Yahoo Finance 대체 자료" in gap for gap in snapshot.data_gaps)
+    assert yahoo_calls == 0
 
 
 @pytest.mark.asyncio
@@ -617,7 +623,7 @@ async def test_korea_yahoo_provider_rejects_metadata_mismatch(
 
 
 @pytest.mark.asyncio
-async def test_default_korea_gateway_falls_back_to_yahoo_without_public_key() -> None:
+async def test_default_korea_gateway_does_not_use_yahoo_without_public_key() -> None:
     calls = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -632,23 +638,24 @@ async def test_default_korea_gateway_falls_back_to_yahoo_without_public_key() ->
             korea_yahoo_client=yahoo_client,
             now_factory=lambda: NOW,
         )
-        snapshot = await gateway.fetch_eod_snapshot(_instrument())
+        with pytest.raises(MissingPriceApiKeyError, match="공공데이터"):
+            await gateway.fetch_eod_snapshot(_instrument())
     finally:
         await yahoo_client.aclose()
 
-    assert calls == 1
-    assert snapshot.exchange == "KOSPI"
-    assert any("비공식 Yahoo Finance 한국 시세" in gap for gap in snapshot.data_gaps)
-    assert any("조정주가 적용 방식" in gap for gap in snapshot.data_gaps)
-    assert any("시장 구분" in gap for gap in snapshot.data_gaps)
+    assert calls == 0
 
 
 @pytest.mark.asyncio
-async def test_default_korea_gateway_falls_back_after_public_response_error() -> None:
+async def test_default_korea_gateway_does_not_fallback_after_public_response_error() -> None:
+    yahoo_calls = 0
+
     def public_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, text="노출하면 안 되는 전체 오류 본문", request=request)
 
     def yahoo_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal yahoo_calls
+        yahoo_calls += 1
         return httpx.Response(200, json=_yahoo_kr_payload(), request=request)
 
     public_client = httpx.AsyncClient(transport=httpx.MockTransport(public_handler))
@@ -660,13 +667,13 @@ async def test_default_korea_gateway_falls_back_after_public_response_error() ->
             korea_yahoo_client=yahoo_client,
             now_factory=lambda: NOW,
         )
-        snapshot = await gateway.fetch_eod_snapshot(_instrument())
+        with pytest.raises(PriceProviderResponseError, match="HTTP 503"):
+            await gateway.fetch_eod_snapshot(_instrument())
     finally:
         await public_client.aclose()
         await yahoo_client.aclose()
 
-    assert snapshot.exchange == "KOSPI"
-    assert any("공공데이터포털 가격" in gap for gap in snapshot.data_gaps)
+    assert yahoo_calls == 0
 
 
 @pytest.mark.asyncio
@@ -797,6 +804,8 @@ async def test_korea_provider_does_not_leak_key_in_http_error() -> None:
 
     assert "highly-secret" not in str(caught.value)
     assert "503" in str(caught.value)
+    rendered_traceback = "".join(traceback.format_exception(caught.value))
+    assert "highly-secret" not in rendered_traceback
 
 
 @pytest.mark.asyncio

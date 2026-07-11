@@ -827,6 +827,10 @@ async def test_api_accepts_explicit_korean_market_and_keeps_markets_separate() -
             by_id = {item["policy"]["id"]: item for item in sources}
             assert by_id["sec"]["status"]["analysis_ready"] is False
             assert by_id["fred"]["status"]["analysis_ready"] is False
+            assert by_id["bls"]["status"]["analysis_ready"] is True
+            assert by_id["federal_reserve_board"]["status"]["analysis_ready"] is False
+            assert by_id["cboe"]["status"]["analysis_ready"] is False
+            assert by_id["yahoo_finance"]["status"]["analysis_ready"] is False
             assert by_id["data_go_kr"]["status"]["analysis_ready"] is False
             assert by_id["reuters"]["status"]["analysis_ready"] is False
 

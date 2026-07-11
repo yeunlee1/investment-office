@@ -21,6 +21,7 @@ from investment_office.services.research_contracts import (
 )
 
 NOW = datetime(2026, 7, 12, 3, 0, tzinfo=UTC)
+JAN_NOW = datetime(2026, 1, 10, 3, 0, tzinfo=UTC)
 
 
 def _treasury_xml(rows: list[tuple[str, str, str, str]]) -> bytes:
@@ -65,6 +66,39 @@ def _bls_payload() -> bytes:
                         "data": [
                             {"year": "2026", "period": "M06", "value": "4.2"},
                             {"year": "2026", "period": "M05", "value": "4.1"},
+                        ],
+                    },
+                ]
+            },
+        }
+    ).encode()
+
+
+def _bls_year_boundary_payload() -> bytes:
+    return json.dumps(
+        {
+            "status": "REQUEST_SUCCEEDED",
+            "Results": {
+                "series": [
+                    {
+                        "seriesID": "CUSR0000SA0",
+                        "data": [
+                            {"year": "2025", "period": "M11", "value": "324.1"},
+                            {"year": "2024", "period": "M11", "value": "318.0"},
+                        ],
+                    },
+                    {
+                        "seriesID": "CUSR0000SA0L1E",
+                        "data": [
+                            {"year": "2025", "period": "M11", "value": "332.5"},
+                            {"year": "2024", "period": "M11", "value": "325.0"},
+                        ],
+                    },
+                    {
+                        "seriesID": "LNS14000000",
+                        "data": [
+                            {"year": "2025", "period": "M12", "value": "4.2"},
+                            {"year": "2025", "period": "M11", "value": "4.1"},
                         ],
                     },
                 ]
@@ -144,6 +178,69 @@ async def test_provider_failure_preserves_other_official_axis() -> None:
     assert any(
         "노동통계국" in reason for reason in by_section["macro.growth_inflation"].blocking_reasons
     )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_treasury_failures_preserve_bls_axis() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).startswith(TREASURY_XML_URL):
+            return httpx.Response(503, content=b"unavailable", request=request)
+        return httpx.Response(200, content=_bls_payload(), request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await OfficialMacroContextClient(
+            client=client,
+            now_factory=lambda: NOW,
+        ).fetch()
+
+    by_section = {section.section_id: section for section in result.sections}
+    assert by_section["macro.rates"].status is SectionStatus.BLOCKED
+    assert len(by_section["macro.rates"].blocking_reasons) == len(
+        set(by_section["macro.rates"].blocking_reasons)
+    )
+    assert by_section["macro.growth_inflation"].status is SectionStatus.COMPLETE
+    assert {source.source_id for source in result.sources} == {
+        "official:bls:public_data"
+    }
+
+
+@pytest.mark.asyncio
+async def test_bls_monthly_baselines_cross_calendar_year_safely() -> None:
+    bls_request_body: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).startswith(TREASURY_XML_URL):
+            return httpx.Response(
+                200,
+                content=_treasury_xml(
+                    [
+                        ("2025-11-30", "4.10", "4.05", "4.30"),
+                        ("2025-12-31", "4.20", "4.15", "4.40"),
+                    ]
+                ),
+                request=request,
+            )
+        bls_request_body.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            content=_bls_year_boundary_payload(),
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await OfficialMacroContextClient(
+            client=client,
+            now_factory=lambda: JAN_NOW,
+        ).fetch()
+
+    assert bls_request_body["startyear"] == "2024"
+    growth = next(
+        section
+        for section in result.sections
+        if section.section_id == "macro.growth_inflation"
+    )
+    assert growth.status is SectionStatus.COMPLETE
+    assert len(growth.fact_ids) == 6
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from pydantic import AnyHttpUrl
@@ -717,6 +717,48 @@ async def test_company_fact_published_after_observation_cutoff_is_excluded() -> 
     assert future_fundamental.fact_id not in fact_ids
     assert fundamental.status is SectionStatus.BLOCKED
     assert result.bundle.quality.analysis_eligible is False
+
+
+@pytest.mark.asyncio
+async def test_live_collection_uses_finished_time_for_retrieval_time_proxy() -> None:
+    instrument = _instrument()
+    retrieved_at = COLLECTED_AT + timedelta(seconds=1)
+    macro = _macro_result()
+    live_macro = MacroContextResult(
+        sources=macro.sources,
+        facts=tuple(
+            fact.model_copy(
+                update={
+                    "published_at": retrieved_at,
+                    "collected_at": retrieved_at,
+                }
+            )
+            for fact in macro.facts
+        ),
+        sections=macro.sections,
+    )
+    pipeline = ResearchPipeline(
+        macro_client=_MacroClient(live_macro),
+        company_client=_CompanyClient(_company_result(instrument)),
+        now_factory=lambda: retrieved_at,
+    )
+
+    result = await pipeline.collect(
+        instrument,
+        _snapshot(),
+        as_of=COLLECTED_AT,
+    )
+
+    assert result.observation_cutoff == retrieved_at
+    assert {fact.fact_id for fact in live_macro.facts} <= {
+        fact.fact_id for fact in result.bundle.facts
+    }
+    macro_sections = [
+        section
+        for section in result.bundle.sections
+        if section.section_id.startswith("macro.")
+    ]
+    assert all(section.status is SectionStatus.COMPLETE for section in macro_sections)
 
 
 @pytest.mark.asyncio

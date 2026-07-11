@@ -139,7 +139,7 @@ class ResearchPipeline:
         price_max_age_days: int = 7,
         fundamental_max_age_days: int = 180,
         disclosure_max_age_days: int = 120,
-        macro_cache_ttl_seconds: float = 900,
+        macro_cache_ttl_seconds: float = 14_400,
     ) -> None:
         if isinstance(price_max_age_days, bool) or price_max_age_days < 1:
             raise ValueError("price_max_age_days는 1 이상이어야 합니다.")
@@ -180,6 +180,7 @@ class ResearchPipeline:
 
         requested_at = _require_aware(as_of or self._now_factory(), "as_of")
         observation_cutoff = _require_aware(cutoff or requested_at, "cutoff")
+        has_explicit_observation_cutoff = cutoff is not None
         if snapshot.as_of_date > observation_cutoff.date():
             raise ValueError("시장 스냅샷 거래일은 관측 cutoff보다 늦을 수 없습니다.")
 
@@ -187,6 +188,9 @@ class ResearchPipeline:
             self.get_macro_context(instrument.market),
             self._collect_company(instrument, observation_cutoff),
         )
+        collection_finished_at = _require_aware(self._now_factory(), "수집 완료 시각")
+        if not has_explicit_observation_cutoff:
+            observation_cutoff = collection_finished_at
         macro_result = _restrict_macro_to_observation_cutoff(
             macro_result,
             observation_cutoff,
@@ -196,7 +200,6 @@ class ResearchPipeline:
             observation_cutoff,
         )
 
-        collection_finished_at = _require_aware(self._now_factory(), "수집 완료 시각")
         bundle_cutoff = _collection_cutoff(
             requested_at,
             collection_finished_at,
@@ -304,7 +307,7 @@ class ResearchPipeline:
         )
 
     async def get_macro_context(self, market: MarketId | None = None) -> MacroContextResult:
-        """15분 캐시와 단일화를 적용해 공통 거시 자료를 시장별 보완 구역과 반환한다."""
+        """4시간 캐시와 단일화를 적용해 공통 거시 자료를 시장별 보완 구역과 반환한다."""
 
         common_task = self._get_common_macro_context()
         if market is not MarketId.KR:

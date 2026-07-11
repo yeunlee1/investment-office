@@ -270,6 +270,7 @@ class _OfficialSeriesSpec:
     baseline_max_lag_days: int
     max_age_days: int
     change_label: str
+    lookback_months: int | None = None
 
 
 _TREASURY_SPECS: Final = (
@@ -339,6 +340,7 @@ _BLS_SPECS: Final = (
         45,
         75,
         "12개월 변화",
+        lookback_months=12,
     ),
     _OfficialSeriesSpec(
         "CUSR0000SA0L1E",
@@ -352,6 +354,7 @@ _BLS_SPECS: Final = (
         45,
         75,
         "12개월 변화",
+        lookback_months=12,
     ),
     _OfficialSeriesSpec(
         "LNS14000000",
@@ -365,6 +368,7 @@ _BLS_SPECS: Final = (
         7,
         75,
         "1개월 변화",
+        lookback_months=1,
     ),
 )
 
@@ -538,11 +542,12 @@ class OfficialMacroContextClient:
             "Accept": "application/xml, application/json",
             "User-Agent": "investment-office/0.1",
         }
-        start_year = current_year - 1
+        treasury_start_year = current_year - 1
+        bls_start_year = current_year - 2
         requests = (
             self._get_treasury(client, current_year, headers),
-            self._get_treasury(client, start_year, headers),
-            self._get_bls(client, start_year, current_year, headers),
+            self._get_treasury(client, treasury_start_year, headers),
+            self._get_bls(client, bls_start_year, current_year, headers),
         )
         return tuple(await asyncio.gather(*requests, return_exceptions=True))
 
@@ -950,11 +955,19 @@ def _build_official_series(
         _build_official_fact(spec, latest, collected_at, kind="level")
     ]
     data_gaps: list[str] = []
-    baseline = _find_baseline(
-        observations,
-        latest.observed_on,
-        lookback_days=spec.lookback_days,
-        max_lag_days=spec.baseline_max_lag_days,
+    baseline = (
+        _find_monthly_baseline(
+            observations,
+            latest.observed_on,
+            months=spec.lookback_months,
+        )
+        if spec.lookback_months is not None
+        else _find_baseline(
+            observations,
+            latest.observed_on,
+            lookback_days=spec.lookback_days,
+            max_lag_days=spec.baseline_max_lag_days,
+        )
     )
     if baseline is None:
         data_gaps.append(f"{spec.metric}의 유효한 {spec.change_label} 기준값이 없습니다.")
@@ -1202,6 +1215,24 @@ def _find_baseline(
     return candidates[-1] if candidates else None
 
 
+def _find_monthly_baseline(
+    observations: tuple[_Observation, ...],
+    latest_date: date,
+    *,
+    months: int,
+) -> _Observation | None:
+    month_index = latest_date.year * 12 + latest_date.month - 1 - months
+    target_year, zero_based_month = divmod(month_index, 12)
+    target_month = zero_based_month + 1
+    candidates = [
+        observation
+        for observation in observations
+        if observation.observed_on.year == target_year
+        and observation.observed_on.month == target_month
+    ]
+    return candidates[-1] if candidates else None
+
+
 def _calculate_change(
     spec: FredSeriesSpec,
     latest_value: float,
@@ -1244,6 +1275,9 @@ def _build_section(
     data_gaps: list[str],
     blocking_reasons: list[str],
 ) -> ResearchSection:
+    fact_ids = list(dict.fromkeys(fact_ids))
+    data_gaps = list(dict.fromkeys(data_gaps))
+    blocking_reasons = list(dict.fromkeys(blocking_reasons))
     if blocking_reasons:
         status = SectionStatus.BLOCKED
     elif data_gaps and fact_ids:

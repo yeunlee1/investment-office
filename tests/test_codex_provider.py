@@ -91,14 +91,7 @@ def valid_result() -> dict[str, Any]:
         "confidence": 0.72,
         "summary": "추세 확인에 필요한 기간별 데이터가 부족하다.",
         "key_points": ["현재 가격은 123.45로 제공되었다."],
-        "evidence": [
-            {
-                "claim": "입력에 현재 가격이 포함되어 있다.",
-                "fact_id": None,
-                "source_url": "https://example.com/filing",
-                "published_at": "2026-07-10",
-            }
-        ],
+        "evidence": [],
         "risks": ["단일 시점 가격만으로 추세를 판단할 수 없다."],
         "recommendation": "추가 시계열 데이터가 들어올 때까지 관찰한다.",
         "data_gaps": ["가격 시계열과 거래량이 없다."],
@@ -148,6 +141,10 @@ def grounded_bundle(fact_id: str) -> dict[str, Any]:
             {
                 "fact_id": fact_id,
                 "source_id": "source:official",
+                "metric": "매출",
+                "value": 100,
+                "unit": "currency",
+                "currency": "KRW",
                 "published_at": "2026-07-10",
             }
         ],
@@ -212,6 +209,8 @@ async def test_analyze_uses_saved_auth_read_only_json_and_callbacks(
     prompt = process.stdin.data.decode("utf-8")
     assert "어떤 도구도 사용하지 않는다" in prompt
     assert "입력에 없는 사실, 수치, 날짜, 출처 URL을 만들지 않는다" in prompt
+    assert "각 evidence 항목에는 입력에 존재하는 fact_id 하나만" in prompt
+    assert "claim, source_url, published_at 등 다른 필드는 만들지 않는다" in prompt
     assert "사실 원장에 연결할 수 없는 주장은 evidence에 넣지 않는다" in prompt
     assert "manual_work_request 또는 committee_directed_request" in prompt
     assert "제목과 질문을 분석 초점으로만 사용한다" in prompt
@@ -291,10 +290,15 @@ async def test_analyze_rejects_fabricated_source_url(
     valid_result: dict[str, Any],
 ) -> None:
     invalid_result = json.loads(json.dumps(valid_result))
-    invalid_result["evidence"][0]["source_url"] = "https://invented.example/report"
+    invalid_result["evidence"] = [
+        {
+            "fact_id": "fundamental:sec:revenue",
+            "source_url": "https://invented.example/report",
+        }
+    ]
     install_fake_spawn(monkeypatch, result=invalid_result)
 
-    with pytest.raises(CodexResponseValidationError, match="입력 데이터에 없는 출처"):
+    with pytest.raises(CodexResponseValidationError, match="스키마"):
         await CodexProvider().analyze("technical", "AAPL", snapshot, [])
 
 
@@ -305,10 +309,15 @@ async def test_analyze_rejects_fabricated_publication_date(
     valid_result: dict[str, Any],
 ) -> None:
     invalid_result = json.loads(json.dumps(valid_result))
-    invalid_result["evidence"][0]["published_at"] = "2025-01-01"
+    invalid_result["evidence"] = [
+        {
+            "fact_id": "fundamental:sec:revenue",
+            "published_at": "2025-01-01",
+        }
+    ]
     install_fake_spawn(monkeypatch, result=invalid_result)
 
-    with pytest.raises(CodexResponseValidationError, match="published_at"):
+    with pytest.raises(CodexResponseValidationError, match="스키마"):
         await CodexProvider().analyze("technical", "AAPL", snapshot, [])
 
 
@@ -322,7 +331,7 @@ async def test_analyze_requires_evidence_to_reference_input_fact(
         "research_bundle": grounded_bundle("fundamental:sec:revenue")
     }
     invalid_result = json.loads(json.dumps(valid_result))
-    invalid_result["evidence"][0]["fact_id"] = "fundamental:made-up"
+    invalid_result["evidence"] = [{"fact_id": "fundamental:made-up"}]
     install_fake_spawn(monkeypatch, result=invalid_result)
 
     with pytest.raises(CodexResponseValidationError, match="fact_id"):
@@ -341,59 +350,43 @@ async def test_analyze_accepts_evidence_referencing_input_fact(
     }
     grounded_result = json.loads(json.dumps(valid_result))
     grounded_result["ticker"] = "005930"
-    grounded_result["evidence"][0]["fact_id"] = "fundamental:dart:revenue"
+    grounded_result["evidence"] = [{"fact_id": "fundamental:dart:revenue"}]
     _, process = install_fake_spawn(monkeypatch, result=grounded_result)
 
     result = await CodexProvider().analyze(
         "technical", "005930", grounded_snapshot, []
     )
 
-    assert result["evidence"][0]["fact_id"] == "fundamental:dart:revenue"
+    assert result["evidence"] == [
+        {
+            "claim": "매출=100 currency(KRW)",
+            "fact_id": "fundamental:dart:revenue",
+            "source_url": "https://example.com/filing",
+            "published_at": "2026-07-10",
+        }
+    ]
     assert "한국 주식 투자위원회" in process.stdin.data.decode("utf-8")
 
 
 @pytest.mark.asyncio
-async def test_analyze_rejects_mixed_grounding_metadata(
+async def test_analyze_rejects_llm_supplied_claim(
     monkeypatch: pytest.MonkeyPatch,
     snapshot: dict[str, Any],
     valid_result: dict[str, Any],
 ) -> None:
     grounded_snapshot = snapshot | {
-        "research_bundle": {
-            "sources": [
-                {
-                    "source_id": "source:sec",
-                    "url": "https://www.sec.gov/filing",
-                },
-                {
-                    "source_id": "source:macro",
-                    "url": "https://example.com/macro",
-                },
-            ],
-            "facts": [
-                {
-                    "fact_id": "fundamental:sec:revenue",
-                    "source_id": "source:sec",
-                    "published_at": "2026-07-09",
-                },
-                {
-                    "fact_id": "macro:volatility:vix",
-                    "source_id": "source:macro",
-                    "published_at": "2026-07-10",
-                },
-            ],
-        }
+        "research_bundle": grounded_bundle("fundamental:sec:revenue")
     }
     invalid_result = json.loads(json.dumps(valid_result))
-    invalid_result["evidence"][0] = {
-        "claim": "매출 사실에 다른 자료의 주소와 날짜를 붙였다.",
-        "fact_id": "fundamental:sec:revenue",
-        "source_url": "https://example.com/macro",
-        "published_at": "2026-07-10",
-    }
+    invalid_result["evidence"] = [
+        {
+            "claim": "모델이 임의로 만든 매출 설명이다.",
+            "fact_id": "fundamental:sec:revenue",
+        }
+    ]
     install_fake_spawn(monkeypatch, result=invalid_result)
 
-    with pytest.raises(CodexResponseValidationError, match="조합"):
+    with pytest.raises(CodexResponseValidationError, match="스키마"):
         await CodexProvider().analyze("technical", "AAPL", grounded_snapshot, [])
 
 

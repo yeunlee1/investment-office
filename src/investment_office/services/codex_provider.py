@@ -5,7 +5,6 @@ import asyncio
 import inspect
 import json
 import os
-import re
 import subprocess
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -129,14 +128,11 @@ class CodexResponseValidationError(CodexProviderError):
 
 
 class EvidenceItem(BaseModel):
-    """A claim with only source metadata already present in the input."""
+    """모델이 선택한 사실 원장 식별자 하나만 받는다."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    claim: NonEmptyString
-    fact_id: str | None
-    source_url: str | None
-    published_at: str | None
+    fact_id: NonEmptyString
 
 
 class AnalysisResult(BaseModel):
@@ -155,6 +151,135 @@ class AnalysisResult(BaseModel):
     recommendation: NonEmptyString
     data_gaps: list[NonEmptyString]
     invalidations: list[NonEmptyString]
+
+
+def reconstruct_evidence(
+    snapshot: Mapping[str, Any],
+    evidence_items: object,
+) -> list[dict[str, str]]:
+    """모델의 fact_id를 사실 원장의 표시 문장과 출처 메타데이터로 재구성한다."""
+
+    if not isinstance(evidence_items, Sequence) or isinstance(
+        evidence_items, (str, bytes, bytearray)
+    ):
+        raise CodexResponseValidationError("evidence는 fact_id 객체의 배열이어야 합니다.")
+    if not evidence_items:
+        return []
+
+    bundle = snapshot.get("research_bundle")
+    if not isinstance(bundle, Mapping):
+        raise CodexResponseValidationError(
+            "사실 원장이 없는 입력은 evidence를 포함할 수 없습니다."
+        )
+    raw_sources = bundle.get("sources")
+    raw_facts = bundle.get("facts")
+    if not isinstance(raw_sources, Sequence) or isinstance(
+        raw_sources, (str, bytes, bytearray)
+    ):
+        raise CodexResponseValidationError("사실 원장의 sources 배열이 올바르지 않습니다.")
+    if not isinstance(raw_facts, Sequence) or isinstance(
+        raw_facts, (str, bytes, bytearray)
+    ):
+        raise CodexResponseValidationError("사실 원장의 facts 배열이 올바르지 않습니다.")
+
+    source_urls: dict[str, str] = {}
+    for raw_source in raw_sources:
+        if not isinstance(raw_source, Mapping):
+            raise CodexResponseValidationError("사실 원장의 출처 객체가 올바르지 않습니다.")
+        source_id = raw_source.get("source_id")
+        source_url = raw_source.get("url")
+        if not isinstance(source_id, str) or not source_id.strip():
+            raise CodexResponseValidationError("사실 원장 출처의 source_id가 올바르지 않습니다.")
+        if not isinstance(source_url, str) or not source_url.strip():
+            raise CodexResponseValidationError("사실 원장 출처의 URL이 올바르지 않습니다.")
+        parsed_url = urlsplit(source_url)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+            raise CodexResponseValidationError("사실 원장 출처의 URL이 HTTP(S) 주소가 아닙니다.")
+        existing_url = source_urls.get(source_id)
+        if existing_url is not None and existing_url != source_url:
+            raise CodexResponseValidationError("같은 source_id에 서로 다른 URL이 있습니다.")
+        source_urls[source_id] = source_url
+
+    fact_ledger: dict[str, dict[str, str]] = {}
+    for raw_fact in raw_facts:
+        if not isinstance(raw_fact, Mapping):
+            raise CodexResponseValidationError("사실 원장의 사실 객체가 올바르지 않습니다.")
+        fact_id = raw_fact.get("fact_id")
+        source_id = raw_fact.get("source_id")
+        metric = raw_fact.get("metric")
+        value = raw_fact.get("value")
+        unit = raw_fact.get("unit")
+        currency = raw_fact.get("currency")
+        published_at = raw_fact.get("published_at")
+        if not isinstance(fact_id, str) or not fact_id.strip():
+            raise CodexResponseValidationError("사실 원장의 fact_id가 올바르지 않습니다.")
+        if not isinstance(source_id, str) or source_id not in source_urls:
+            raise CodexResponseValidationError(
+                f"사실 {fact_id}가 존재하지 않는 출처를 참조합니다."
+            )
+        if not isinstance(metric, str) or not metric.strip():
+            raise CodexResponseValidationError(f"사실 {fact_id}의 metric이 올바르지 않습니다.")
+        if not isinstance(unit, str) or not unit.strip():
+            raise CodexResponseValidationError(f"사실 {fact_id}의 unit이 올바르지 않습니다.")
+        if not isinstance(value, (str, int, float, bool)):
+            raise CodexResponseValidationError(f"사실 {fact_id}의 value가 스칼라가 아닙니다.")
+        if not isinstance(published_at, str) or not published_at.strip():
+            raise CodexResponseValidationError(
+                f"사실 {fact_id}의 published_at이 올바르지 않습니다."
+            )
+        rendered_value = _render_fact_value(value, fact_id)
+        rendered_unit = unit.strip()
+        if isinstance(currency, str) and currency.strip():
+            rendered_unit = f"{rendered_unit}({currency.strip().upper()})"
+        title = f"{metric.strip()}={rendered_value} {rendered_unit}"
+        if len(title) > 300:
+            raise CodexResponseValidationError(
+                f"사실 {fact_id}의 결정론적 근거 제목이 300자를 초과합니다."
+            )
+        grounding = {
+            "claim": title,
+            "fact_id": fact_id,
+            "source_url": source_urls[source_id],
+            "published_at": published_at,
+        }
+        existing_fact = fact_ledger.get(fact_id)
+        if existing_fact is not None and existing_fact != grounding:
+            raise CodexResponseValidationError(
+                f"같은 fact_id {fact_id}가 서로 다른 사실로 중복되었습니다."
+            )
+        fact_ledger[fact_id] = grounding
+
+    reconstructed: list[dict[str, str]] = []
+    seen_fact_ids: set[str] = set()
+    for item in evidence_items:
+        if not isinstance(item, Mapping):
+            raise CodexResponseValidationError("evidence 항목은 fact_id 객체여야 합니다.")
+        fact_id = item.get("fact_id")
+        if not isinstance(fact_id, str) or not fact_id.strip():
+            raise CodexResponseValidationError("evidence.fact_id가 올바르지 않습니다.")
+        selected_grounding = fact_ledger.get(fact_id)
+        if selected_grounding is None:
+            raise CodexResponseValidationError(
+                "evidence.fact_id가 입력 사실 원장에 없는 값을 포함합니다."
+            )
+        if fact_id not in seen_fact_ids:
+            reconstructed.append(dict(selected_grounding))
+            seen_fact_ids.add(fact_id)
+    return reconstructed
+
+
+def _render_fact_value(value: str | int | float | bool, fact_id: str) -> str:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise CodexResponseValidationError(
+            f"사실 {fact_id}의 value를 안전하게 표시할 수 없습니다."
+        ) from exc
 
 
 class CodexProvider:
@@ -484,148 +609,12 @@ class CodexProvider:
                 f"{validated.ticker!r} != {expected_ticker!r}"
             )
 
-        input_strings = self._collect_input_strings((snapshot, context))
-        input_urls = self._collect_input_urls(input_strings)
-        input_fact_ids = self._collect_fact_ids(snapshot)
-        fact_groundings = self._collect_fact_groundings(snapshot)
-        for evidence in validated.evidence:
-            if input_fact_ids:
-                if evidence.fact_id not in input_fact_ids:
-                    raise CodexResponseValidationError(
-                        "evidence.fact_id가 입력 사실 원장에 없는 값을 포함합니다."
-                    )
-                allowed_groundings = fact_groundings.get(evidence.fact_id or "", set())
-                supplied_grounding = (evidence.source_url, evidence.published_at)
-                if not allowed_groundings or supplied_grounding not in allowed_groundings:
-                    raise CodexResponseValidationError(
-                        "evidence의 fact_id, source_url, published_at 조합이 "
-                        "입력 사실 원장과 일치하지 않습니다."
-                    )
-            else:
-                if evidence.source_url is not None:
-                    self._validate_source_url(evidence.source_url, input_urls)
-                if (
-                    evidence.published_at is not None
-                    and evidence.published_at not in input_strings
-                ):
-                    raise CodexResponseValidationError(
-                        "evidence.published_at이 입력 데이터에 없는 값을 포함합니다."
-                    )
-
-        return validated.model_dump(mode="json")
-
-    @staticmethod
-    def _collect_fact_ids(value: Any) -> set[str]:
-        fact_ids: set[str] = set()
-
-        def visit(item: Any) -> None:
-            if isinstance(item, Mapping):
-                fact_id = item.get("fact_id")
-                if isinstance(fact_id, str) and fact_id.strip():
-                    fact_ids.add(fact_id)
-                for nested in item.values():
-                    visit(nested)
-            elif isinstance(item, Sequence) and not isinstance(
-                item, (str, bytes, bytearray)
-            ):
-                for nested in item:
-                    visit(nested)
-
-        visit(value)
-        return fact_ids
-
-    @staticmethod
-    def _collect_fact_groundings(
-        value: Any,
-    ) -> dict[str, set[tuple[str | None, str | None]]]:
-        groundings: dict[str, set[tuple[str | None, str | None]]] = {}
-
-        def visit(item: Any) -> None:
-            if isinstance(item, Mapping):
-                raw_sources = item.get("sources")
-                raw_facts = item.get("facts")
-                if (
-                    isinstance(raw_sources, Sequence)
-                    and not isinstance(raw_sources, (str, bytes, bytearray))
-                    and isinstance(raw_facts, Sequence)
-                    and not isinstance(raw_facts, (str, bytes, bytearray))
-                ):
-                    source_urls: dict[str, str] = {}
-                    for raw_source in raw_sources:
-                        if not isinstance(raw_source, Mapping):
-                            continue
-                        source_id = raw_source.get("source_id")
-                        source_url = raw_source.get("url")
-                        if isinstance(source_id, str) and isinstance(source_url, str):
-                            source_urls[source_id] = source_url
-                    for raw_fact in raw_facts:
-                        if not isinstance(raw_fact, Mapping):
-                            continue
-                        fact_id = raw_fact.get("fact_id")
-                        source_id = raw_fact.get("source_id")
-                        published_at = raw_fact.get("published_at")
-                        if not (
-                            isinstance(fact_id, str)
-                            and isinstance(source_id, str)
-                            and isinstance(published_at, str)
-                        ):
-                            continue
-                        source_url = source_urls.get(source_id)
-                        if source_url is not None:
-                            groundings.setdefault(fact_id, set()).add(
-                                (source_url, published_at)
-                            )
-                for nested in item.values():
-                    visit(nested)
-            elif isinstance(item, Sequence) and not isinstance(
-                item, (str, bytes, bytearray)
-            ):
-                for nested in item:
-                    visit(nested)
-
-        visit(value)
-        return groundings
-
-    @staticmethod
-    def _collect_input_strings(value: Any) -> set[str]:
-        strings: set[str] = set()
-
-        def visit(item: Any) -> None:
-            if isinstance(item, str):
-                strings.add(item)
-            elif isinstance(item, Mapping):
-                for key, nested in item.items():
-                    if isinstance(key, str):
-                        strings.add(key)
-                    visit(nested)
-            elif isinstance(item, Sequence) and not isinstance(item, (str, bytes, bytearray)):
-                for nested in item:
-                    visit(nested)
-
-        visit(value)
-        return strings
-
-    @staticmethod
-    def _collect_input_urls(input_strings: set[str]) -> set[str]:
-        urls: set[str] = set()
-        for value in input_strings:
-            if value.startswith(("https://", "http://")):
-                urls.add(value)
-            for match in re.findall(r"https?://[^\s<>\"']+", value):
-                urls.add(match.rstrip(".,);]}>"))
-        return urls
-
-    @staticmethod
-    def _validate_source_url(source_url: str, input_urls: set[str]) -> None:
-        parsed = urlsplit(source_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise CodexResponseValidationError(
-                "evidence.source_url이 유효한 HTTP(S) URL이 아닙니다."
-            )
-        if source_url not in input_urls:
-            raise CodexResponseValidationError(
-                "evidence.source_url이 입력 데이터에 없는 출처를 포함합니다."
-            )
+        result = validated.model_dump(mode="json")
+        result["evidence"] = reconstruct_evidence(
+            snapshot,
+            [item.model_dump(mode="json") for item in validated.evidence],
+        )
+        return result
 
     async def _emit_status(
         self,

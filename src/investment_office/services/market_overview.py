@@ -48,7 +48,7 @@ class MarketOverviewDataQuality(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    analysis_eligible: bool
+    macro_eligible: bool
     blocking_reasons: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     stale_fact_ids: tuple[str, ...] = ()
@@ -212,7 +212,7 @@ def _build_common(us_fetch: _MacroFetch, kr_fetch: _MacroFetch) -> CommonMacroOv
     )
     quality = _build_quality(common_result, MarketId.US)
     return CommonMacroOverview(
-        status="ready" if quality.analysis_eligible else "degraded",
+        status="ready" if quality.macro_eligible else "degraded",
         facts=common_facts,
         sections=common_sections,
         warnings=_unique((*quality.warnings, *quality.blocking_reasons)),
@@ -273,7 +273,7 @@ def _build_quality(
     if not eligible and not blocking_reasons:
         blocking_reasons.append("필수 거시 자료 품질 조건을 충족하지 못했습니다.")
     return MarketOverviewDataQuality(
-        analysis_eligible=eligible,
+        macro_eligible=eligible,
         blocking_reasons=_unique(blocking_reasons),
         warnings=_unique(warnings),
         stale_fact_ids=stale_fact_ids,
@@ -283,7 +283,7 @@ def _build_quality(
 
 def _failed_quality(market: MarketId, failure: str) -> MarketOverviewDataQuality:
     return MarketOverviewDataQuality(
-        analysis_eligible=False,
+        macro_eligible=False,
         blocking_reasons=(failure,),
         blocked_section_ids=_expected_section_ids(market),
     )

@@ -178,25 +178,32 @@ def _fred_result(
 
 
 def _korean_result(fred: MacroContextResult) -> MacroContextResult:
-    ecos_fact = Fact(
-        fact_id="test:macro:kr-base-rate",
-        source_id="official:test:ecos",
-        metric="한국은행 기준금리",
-        value=2.5,
-        unit="percent",
-        observed_at=OBSERVED_AT,
-        published_at=PUBLISHED_AT,
-        collected_at=COLLECTED_AT,
+    ecos_facts = tuple(
+        Fact(
+            fact_id=fact_id,
+            source_id="official:test:ecos",
+            metric=metric,
+            value=value,
+            unit="percent",
+            observed_at=OBSERVED_AT,
+            published_at=PUBLISHED_AT,
+            collected_at=COLLECTED_AT,
+        )
+        for fact_id, metric, value in (
+            ("test:macro:kr-base-rate", "한국은행 기준금리", 2.5),
+            ("test:macro:kr-treasury-3y", "한국 국고채 3년물 금리", 2.8),
+            ("test:macro:kr-treasury-10y", "한국 국고채 10년물 금리", 3.4),
+        )
     )
     ecos_section = ResearchSection(
         section_id=ECOS_SECTION_ID,
         title="한국 고유 거시 지표",
         status=SectionStatus.COMPLETE,
-        fact_ids=(ecos_fact.fact_id,),
+        fact_ids=tuple(fact.fact_id for fact in ecos_facts),
     )
     return MacroContextResult(
         sources=fred.sources,
-        facts=(*fred.facts, ecos_fact),
+        facts=(*fred.facts, *ecos_facts),
         sections=(*fred.sections, ecos_section),
         stale_fact_ids=fred.stale_fact_ids,
         future_section_ids=fred.future_section_ids,
@@ -224,8 +231,8 @@ async def test_build_fetches_both_markets_in_parallel_and_keeps_common_fred_only
     assert overview.markets.kr.market is MarketId.KR
     assert overview.markets.us.confidence == 1
     assert overview.markets.kr.confidence == 1
-    assert overview.markets.us.data_quality.analysis_eligible is True
-    assert overview.markets.kr.data_quality.analysis_eligible is True
+    assert overview.markets.us.data_quality.macro_eligible is True
+    assert overview.markets.kr.data_quality.macro_eligible is True
     assert set(payload) == {"generated_at", "common", "markets"}
     assert set(payload["markets"]) == {"us", "kr"}
     json.dumps(payload, ensure_ascii=False)
@@ -247,7 +254,7 @@ async def test_incomplete_required_section_and_stale_fact_block_analysis() -> No
     us_quality = overview.markets.us.data_quality
 
     assert overview.common.status == "degraded"
-    assert us_quality.analysis_eligible is False
+    assert us_quality.macro_eligible is False
     assert us_quality.stale_fact_ids == (stale_id,)
     assert us_quality.blocked_section_ids == ("macro.currency",)
     assert any("완전하지 않습니다" in reason for reason in us_quality.blocking_reasons)
@@ -267,9 +274,9 @@ async def test_one_market_failure_is_isolated_and_does_not_expose_error_detail()
     overview = await service.build()
 
     assert overview.common.status == "ready"
-    assert overview.markets.us.data_quality.analysis_eligible is False
+    assert overview.markets.us.data_quality.macro_eligible is False
     assert set(overview.markets.us.data_quality.blocked_section_ids) == set(SECTION_TITLES)
-    assert overview.markets.kr.data_quality.analysis_eligible is True
+    assert overview.markets.kr.data_quality.macro_eligible is True
     assert any("RuntimeError" in warning for warning in overview.markets.us.warnings)
     assert all("secret-key-123" not in warning for warning in overview.markets.us.warnings)
 
@@ -285,8 +292,8 @@ async def test_both_market_failures_return_degraded_overview_instead_of_raising(
 
     assert overview.common.status == "degraded"
     assert overview.common.facts == ()
-    assert overview.markets.us.data_quality.analysis_eligible is False
-    assert overview.markets.kr.data_quality.analysis_eligible is False
+    assert overview.markets.us.data_quality.macro_eligible is False
+    assert overview.markets.kr.data_quality.macro_eligible is False
     assert ECOS_SECTION_ID in overview.markets.kr.data_quality.blocked_section_ids
     assert overview.markets.us.regime.rates.value == "unknown"
     assert overview.markets.kr.regime.rates.value == "unknown"

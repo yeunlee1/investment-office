@@ -206,12 +206,12 @@ function renderRegime(marketId, regime) {
 function renderQuality(marketId, quality, warnings) {
   const rail = document.querySelector(`#market-${marketId}-quality`);
   const badge = document.querySelector(`#market-${marketId}-quality-badge`);
-  const eligible = quality?.analysis_eligible === true;
-  const hasReport = typeof quality?.analysis_eligible === "boolean";
+  const eligible = quality?.macro_eligible === true;
+  const hasReport = typeof quality?.macro_eligible === "boolean";
   const qualityState = !hasReport ? "unknown" : eligible ? "ready" : "blocked";
   if (rail) rail.dataset.state = qualityState;
   if (badge) badge.dataset.state = qualityState;
-  setText(badge, !hasReport ? "판정 대기" : eligible ? "분석 자료 충족" : "분석 자료 차단");
+  setText(badge, !hasReport ? "판정 대기" : eligible ? "거시 자료 충족" : "거시 자료 차단");
 
   const title = rail?.querySelector("strong");
   setText(
@@ -219,8 +219,8 @@ function renderQuality(marketId, quality, warnings) {
     !hasReport
       ? "자료 품질 보고서가 없습니다."
       : eligible
-        ? "필수 자료가 분석 기준을 충족했습니다."
-        : "필수 자료 공백으로 매수 판단을 차단합니다.",
+        ? "필수 거시 자료가 시장 국면 판정 기준을 충족했습니다."
+        : "필수 거시 자료 공백으로 시장 국면 판정을 제한합니다.",
   );
   const list = rail?.querySelector("ul");
   clearElement(list);
@@ -260,15 +260,15 @@ function renderOverview(payload) {
   if (elements.generatedAt) elements.generatedAt.dateTime = String(generatedAt || "");
 
   const reports = [asObject(markets.us?.data_quality), asObject(markets.kr?.data_quality)];
-  const eligibleCount = reports.filter((quality) => quality.analysis_eligible === true).length;
-  const knownCount = reports.filter((quality) => typeof quality.analysis_eligible === "boolean").length;
+  const eligibleCount = reports.filter((quality) => quality.macro_eligible === true).length;
+  const knownCount = reports.filter((quality) => typeof quality.macro_eligible === "boolean").length;
   const overallLabel = knownCount < 2
     ? "일부 판정 미수집"
     : eligibleCount === 2
-      ? "양 시장 자료 충족"
+      ? "양 시장 거시 충족"
       : eligibleCount === 0
-        ? "양 시장 판단 차단"
-        : "일부 시장 판단 차단";
+        ? "양 시장 거시 차단"
+        : "일부 시장 거시 차단";
   setText(elements.overallStatus, overallLabel);
   if (elements.overallStatus) elements.overallStatus.dataset.tone = eligibleCount === 2 ? "complete" : knownCount ? "failed" : "idle";
 }

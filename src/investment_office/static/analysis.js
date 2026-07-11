@@ -112,7 +112,7 @@ function normalizeTicker(value, market) {
 function tickerIsValid(ticker, market) {
   return market === "kr"
     ? /^\d{6}$/.test(ticker)
-    : /^[A-Z0-9][A-Z0-9.\-]{0,14}$/.test(ticker);
+    : /^[A-Z][A-Z0-9.\-]{0,14}$/.test(ticker);
 }
 
 function syncMarketInput(select, input, symbol, help = null) {

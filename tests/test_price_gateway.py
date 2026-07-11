@@ -16,6 +16,7 @@ from investment_office.services.price_gateway import (
     MissingPriceApiKeyError,
     PriceMarketMismatchError,
     PriceProviderResponseError,
+    TiingoPriceProvider,
     UnsupportedPriceMarketError,
     build_default_price_gateway,
     build_kr_eod_snapshot,
@@ -157,6 +158,48 @@ def _yahoo_payload() -> dict[str, Any]:
     }
 
 
+def _tiingo_meta(
+    *,
+    ticker: str = "AAPL",
+    exchange: str = "NASDAQ",
+    start_date: str = "1980-12-12",
+    end_date: str = "2026-01-02",
+) -> dict[str, Any]:
+    return {
+        "ticker": ticker,
+        "name": "Example Company",
+        "exchangeCode": exchange,
+        "startDate": start_date,
+        "endDate": end_date,
+    }
+
+
+def _tiingo_prices(
+    dates: list[str],
+    *,
+    adjusted_closes: list[float] | None = None,
+) -> list[dict[str, Any]]:
+    closes = adjusted_closes or [100.0 + index for index in range(len(dates))]
+    return [
+        {
+            "date": f"{trade_date}T00:00:00.000Z",
+            "open": close * 2 - 2,
+            "high": close * 2 + 4,
+            "low": close * 2 - 4,
+            "close": close * 2,
+            "volume": 2_000_000 + index,
+            "adjOpen": close - 1,
+            "adjHigh": close + 2,
+            "adjLow": close - 2,
+            "adjClose": close,
+            "adjVolume": 1_000_000 + index,
+            "divCash": 0,
+            "splitFactor": 1,
+        }
+        for index, (trade_date, close) in enumerate(zip(dates, closes, strict=True))
+    ]
+
+
 @pytest.mark.asyncio
 async def test_default_gateway_routes_us_to_existing_yahoo_client() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
@@ -174,6 +217,194 @@ async def test_default_gateway_routes_us_to_existing_yahoo_client() -> None:
     assert snapshot.ticker == "AAPL"
     assert snapshot.currency == "USD"
     assert snapshot.current_close == 101.0
+    assert any("Yahoo Finance 대체 자료" in gap for gap in snapshot.data_gaps)
+
+
+@pytest.mark.asyncio
+async def test_tiingo_provider_uses_adjusted_bars_and_header_auth_without_secret_leak() -> None:
+    requests: list[httpx.Request] = []
+    secret = "very-private-tiingo-token"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/prices"):
+            payload: object = _tiingo_prices(
+                ["2024-01-02", "2024-01-03"],
+                adjusted_closes=[50.0, 51.0],
+            )
+        else:
+            payload = _tiingo_meta()
+        return httpx.Response(200, json=payload, request=request)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        provider = TiingoPriceProvider(
+            secret,
+            client=http_client,
+            now_factory=lambda: NOW,
+        )
+        snapshot = await provider.fetch_eod_snapshot(_instrument(MarketId.US))
+    finally:
+        await http_client.aclose()
+
+    assert len(requests) == 2
+    assert all(request.headers["authorization"] == f"Token {secret}" for request in requests)
+    assert all(secret not in str(request.url) for request in requests)
+    assert requests[1].url.params["startDate"] == "2024-01-02"
+    assert requests[1].url.params["endDate"] == "2026-01-02"
+    assert requests[1].url.params["resampleFreq"] == "daily"
+    assert snapshot.current_close == 51.0
+    assert snapshot.previous_close == 50.0
+    assert snapshot.exchange == "NASDAQ"
+    assert snapshot.source_url.startswith("https://api.tiingo.com/tiingo/daily/AAPL/prices")
+    assert secret not in snapshot.source_url
+
+
+@pytest.mark.asyncio
+async def test_tiingo_provider_uses_dash_for_class_share_symbol() -> None:
+    observed_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed_paths.append(request.url.path)
+        payload: object = (
+            _tiingo_prices(["2024-01-02", "2024-01-03"])
+            if request.url.path.endswith("/prices")
+            else _tiingo_meta(ticker="BRK-B", exchange="NYSE")
+        )
+        return httpx.Response(200, json=payload, request=request)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        snapshot = await TiingoPriceProvider(
+            "secret",
+            client=http_client,
+            now_factory=lambda: NOW,
+        ).fetch_eod_snapshot(_instrument(MarketId.US, symbol="BRK.B", exchange="NYSE"))
+    finally:
+        await http_client.aclose()
+
+    assert observed_paths == [
+        "/tiingo/daily/BRK-B",
+        "/tiingo/daily/BRK-B/prices",
+    ]
+    assert snapshot.ticker == "BRK.B"
+
+
+@pytest.mark.asyncio
+async def test_tiingo_provider_excludes_unconfirmed_current_eastern_day() -> None:
+    now_before_confirmation = datetime(2026, 1, 2, 23, tzinfo=UTC)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload: object = (
+            _tiingo_prices(["2025-12-31", "2026-01-01", "2026-01-02"])
+            if request.url.path.endswith("/prices")
+            else _tiingo_meta()
+        )
+        return httpx.Response(200, json=payload, request=request)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        snapshot = await TiingoPriceProvider(
+            "secret",
+            client=http_client,
+            now_factory=lambda: now_before_confirmation,
+        ).fetch_eod_snapshot(_instrument(MarketId.US))
+    finally:
+        await http_client.aclose()
+
+    assert snapshot.observations == 2
+    assert snapshot.as_of_date == date(2026, 1, 1)
+    assert snapshot.current_close == 101.0
+    assert any("오후 8시 이전" in gap for gap in snapshot.data_gaps)
+
+
+@pytest.mark.asyncio
+async def test_tiingo_provider_requires_token_before_network() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500, request=request)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        provider = TiingoPriceProvider(None, client=http_client)
+        with pytest.raises(MissingPriceApiKeyError, match="Tiingo.*인증 토큰"):
+            await provider.fetch_eod_snapshot(_instrument(MarketId.US))
+    finally:
+        await http_client.aclose()
+
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_tiingo_provider_sanitizes_http_and_logical_errors() -> None:
+    secret = "never-show-this-token"
+
+    for response_kind in ("http", "logical"):
+        def handler(request: httpx.Request, *, kind: str = response_kind) -> httpx.Response:
+            if kind == "http":
+                return httpx.Response(503, text=secret, request=request)
+            return httpx.Response(200, json={"detail": secret}, request=request)
+
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            provider = TiingoPriceProvider(secret, client=http_client)
+            with pytest.raises(PriceProviderResponseError) as caught:
+                await provider.fetch_eod_snapshot(_instrument(MarketId.US))
+        finally:
+            await http_client.aclose()
+
+        assert secret not in str(caught.value)
+        if response_kind == "http":
+            assert "HTTP 503" in str(caught.value)
+        else:
+            assert "논리 오류" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_tiingo_provider_rejects_metadata_symbol_mismatch() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_tiingo_meta(ticker="MSFT"), request=request)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        provider = TiingoPriceProvider("secret", client=http_client, now_factory=lambda: NOW)
+        with pytest.raises(PriceProviderResponseError, match="종목이 요청과 다릅니다"):
+            await provider.fetch_eod_snapshot(_instrument(MarketId.US))
+    finally:
+        await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_default_gateway_falls_back_to_yahoo_after_tiingo_failure() -> None:
+    def tiingo_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, request=request)
+
+    def yahoo_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_yahoo_payload(), request=request)
+
+    tiingo_client = httpx.AsyncClient(transport=httpx.MockTransport(tiingo_handler))
+    yahoo_http_client = httpx.AsyncClient(transport=httpx.MockTransport(yahoo_handler))
+    try:
+        gateway = build_default_price_gateway(
+            tiingo_api_token="secret",
+            tiingo_client=tiingo_client,
+            yahoo_client=YahooFinanceClient(
+                client=yahoo_http_client,
+                now_factory=lambda: NOW,
+            ),
+            now_factory=lambda: NOW,
+        )
+        snapshot = await gateway.fetch_eod_snapshot(_instrument(MarketId.US))
+    finally:
+        await tiingo_client.aclose()
+        await yahoo_http_client.aclose()
+
+    assert snapshot.current_close == 101.0
+    assert snapshot.source_url.startswith("https://query1.finance.yahoo.com/")
+    assert any("Yahoo Finance 대체 자료" in gap for gap in snapshot.data_gaps)
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@
 import {
   API,
   ROLE_ORDER,
+  appendMarketBadge,
   appendStatusBadge,
   appendWorkflowBadge,
   asArray,
@@ -12,6 +13,7 @@ import {
   formatDateTime,
   formatPercent,
   initSiteShell,
+  marketInfo,
   requestJson,
   roleLabel,
   runProgress,
@@ -23,11 +25,16 @@ import {
 
 const elements = {
   analysisForm: document.querySelector("#individual-analysis-form"),
+  market: document.querySelector("#individual-market"),
   ticker: document.querySelector("#individual-ticker"),
+  tickerSymbol: document.querySelector("#individual-ticker-symbol"),
+  tickerHelp: document.querySelector("#individual-ticker-help"),
   thesis: document.querySelector("#individual-thesis"),
   analysisFeedback: document.querySelector("#individual-feedback"),
   scheduleForm: document.querySelector("#schedule-form"),
+  scheduleMarket: document.querySelector("#schedule-market"),
   scheduleTicker: document.querySelector("#schedule-ticker"),
+  scheduleTickerSymbol: document.querySelector("#schedule-ticker-symbol"),
   scheduleThesis: document.querySelector("#schedule-thesis"),
   scheduleTime: document.querySelector("#schedule-time"),
   scheduleFeedback: document.querySelector("#schedule-feedback"),
@@ -36,6 +43,7 @@ const elements = {
   runList: document.querySelector("#analysis-run-list"),
   runFeedback: document.querySelector("#analysis-run-feedback"),
   selectedTicker: document.querySelector("#selected-run-ticker"),
+  selectedMarket: document.querySelector("#selected-run-market"),
   selectedStatus: document.querySelector("#selected-run-status"),
   selectedId: document.querySelector("#selected-run-id"),
   selectedMessage: document.querySelector("#selected-run-message"),
@@ -96,6 +104,34 @@ const state = {
 const ACTIVE_RUN_STATUSES = new Set(["queued", "scheduled", "claimed", "dispatched", "running"]);
 const ACTIVE_COMMITTEE_STATUSES = new Set(["running", "stop_requested"]);
 
+function normalizeTicker(value, market) {
+  const ticker = String(value || "").trim();
+  return market === "kr" ? ticker : ticker.toUpperCase();
+}
+
+function tickerIsValid(ticker, market) {
+  return market === "kr"
+    ? /^\d{6}$/.test(ticker)
+    : /^[A-Z0-9][A-Z0-9.\-]{0,14}$/.test(ticker);
+}
+
+function syncMarketInput(select, input, symbol, help = null) {
+  const market = select?.value === "kr" ? "kr" : "us";
+  if (input) {
+    input.placeholder = market === "kr" ? "005930" : "NVDA";
+    input.inputMode = market === "kr" ? "numeric" : "text";
+    input.maxLength = market === "kr" ? 6 : 15;
+    input.value = normalizeTicker(input.value, market);
+  }
+  setText(symbol, market === "kr" ? "₩" : "$", market === "kr" ? "₩" : "$");
+  setText(
+    help,
+    market === "kr"
+      ? "한국 거래소의 6자리 종목코드를 입력하세요."
+      : "미국 종목 티커를 입력하세요. 영문, 숫자, 점과 하이픈을 사용할 수 있습니다.",
+  );
+}
+
 function setFormDisabled(form, disabled) {
   form?.querySelectorAll("input, textarea, select, button").forEach((control) => {
     control.disabled = disabled;
@@ -143,6 +179,7 @@ function renderRunList() {
     button.dataset.runId = run.run_id;
     const head = createElement("span", "run-row__head");
     head.append(createElement("strong", "", run.ticker || "종목 미정"));
+    appendMarketBadge(head, run.market, run.ticker);
     appendStatusBadge(head, run.status);
     const meta = createElement("span", "run-row__meta");
     meta.append(createElement("span", "", formatDateTime(run.created_at)));
@@ -178,6 +215,8 @@ async function loadRunList({ preserveSelection = false } = {}) {
 function renderEmptyRun() {
   state.run = null;
   setText(elements.selectedTicker, "실행을 선택하세요.");
+  setText(elements.selectedMarket, "시장 미정");
+  if (elements.selectedMarket) elements.selectedMarket.dataset.market = "unknown";
   setText(elements.selectedStatus, "대기");
   if (elements.selectedStatus) elements.selectedStatus.dataset.tone = "idle";
   setText(elements.selectedId, "—");
@@ -232,6 +271,9 @@ function renderSelectedRun() {
   const status = statusInfo(run.status);
   const progress = runProgress(run);
   setText(elements.selectedTicker, run.ticker, "종목 미정");
+  const market = marketInfo(run.market, run.ticker);
+  setText(elements.selectedMarket, market.label);
+  if (elements.selectedMarket) elements.selectedMarket.dataset.market = market.key;
   setText(elements.selectedStatus, status.label);
   if (elements.selectedStatus) elements.selectedStatus.dataset.tone = status.tone;
   setText(elements.selectedId, run.run_id, "—");
@@ -545,6 +587,7 @@ function renderSchedules(schedules) {
     const item = createElement("li", "schedule-row");
     const head = createElement("div", "schedule-row__head");
     head.append(createElement("strong", "", schedule.ticker || "종목 미정"));
+    appendMarketBadge(head, schedule.market, schedule.ticker);
     appendStatusBadge(head, schedule.status);
     item.append(head);
     item.append(createElement("time", "schedule-row__time", formatDateTime(schedule.scheduled_for)));
@@ -568,10 +611,11 @@ function renderSchedules(schedules) {
 
 async function submitAnalysis(event) {
   event.preventDefault();
-  const ticker = String(elements.ticker?.value || "").trim().toUpperCase();
+  const market = elements.market?.value === "kr" ? "kr" : "us";
+  const ticker = normalizeTicker(elements.ticker?.value, market);
   const thesis = String(elements.thesis?.value || "").trim();
-  if (!/^[A-Z0-9][A-Z0-9.\-]{0,14}$/.test(ticker)) {
-    setFeedback(elements.analysisFeedback, "올바른 미국 종목 코드를 입력하세요.", "error");
+  if (!tickerIsValid(ticker, market)) {
+    setFeedback(elements.analysisFeedback, market === "kr" ? "한국 종목코드는 숫자 6자리로 입력하세요." : "올바른 미국 종목 코드를 입력하세요.", "error");
     elements.ticker?.focus();
     return;
   }
@@ -580,7 +624,7 @@ async function submitAnalysis(event) {
   try {
     const payload = await requestJson(API.analyze, {
       method: "POST",
-      body: JSON.stringify(thesis ? { ticker, thesis } : { ticker }),
+      body: JSON.stringify(thesis ? { market, ticker, thesis } : { market, ticker }),
     }, 45_000);
     const run = payload.run || {};
     setFeedback(elements.analysisFeedback, `${ticker} 분석이 시작되었습니다.`, "success");
@@ -595,18 +639,19 @@ async function submitAnalysis(event) {
 
 async function submitSchedule(event) {
   event.preventDefault();
-  const ticker = String(elements.scheduleTicker?.value || "").trim().toUpperCase();
+  const market = elements.scheduleMarket?.value === "kr" ? "kr" : "us";
+  const ticker = normalizeTicker(elements.scheduleTicker?.value, market);
   const thesis = String(elements.scheduleThesis?.value || "").trim();
   const localTime = String(elements.scheduleTime?.value || "");
   const scheduledDate = new Date(localTime);
-  if (!/^[A-Z0-9][A-Z0-9.\-]{0,14}$/.test(ticker) || Number.isNaN(scheduledDate.getTime())) {
+  if (!tickerIsValid(ticker, market) || Number.isNaN(scheduledDate.getTime())) {
     setFeedback(elements.scheduleFeedback, "종목 코드와 미래 예약 시각을 확인하세요.", "error");
     return;
   }
   setFormDisabled(elements.scheduleForm, true);
   setFeedback(elements.scheduleFeedback, `${ticker} 일회성 분석 예약을 등록하고 있습니다.`);
   try {
-    const body = { ticker, scheduled_for: scheduledDate.toISOString() };
+    const body = { market, ticker, scheduled_for: scheduledDate.toISOString() };
     if (thesis) body.thesis = thesis;
     const payload = await requestJson(API.schedules, { method: "POST", body: JSON.stringify(body) });
     setFeedback(elements.scheduleFeedback, `${ticker} 예약을 등록했습니다.`, "success");
@@ -776,6 +821,8 @@ function handleTabKeydown(event) {
 function bindEvents() {
   elements.analysisForm?.addEventListener("submit", submitAnalysis);
   elements.scheduleForm?.addEventListener("submit", submitSchedule);
+  elements.market?.addEventListener("change", () => syncMarketInput(elements.market, elements.ticker, elements.tickerSymbol, elements.tickerHelp));
+  elements.scheduleMarket?.addEventListener("change", () => syncMarketInput(elements.scheduleMarket, elements.scheduleTicker, elements.scheduleTickerSymbol));
   elements.scheduleRefresh?.addEventListener("click", loadSchedules);
   elements.scheduleList?.addEventListener("click", async (event) => {
     const button = event.target.closest('[data-schedule-action="cancel"]');
@@ -812,6 +859,8 @@ function bindEvents() {
 }
 
 bindEvents();
+syncMarketInput(elements.market, elements.ticker, elements.tickerSymbol, elements.tickerHelp);
+syncMarketInput(elements.scheduleMarket, elements.scheduleTicker, elements.scheduleTickerSymbol);
 setScheduleDefault();
 activateTab("agents");
 await initSiteShell((payload, eventType) => {

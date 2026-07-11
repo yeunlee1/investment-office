@@ -1,6 +1,7 @@
 // 메인 허브에서 두 분석 작업공간과 최근 완료 이력을 요약한다.
 import {
   API,
+  appendMarketBadge,
   appendStatusBadge,
   appendWorkflowBadge,
   asArray,
@@ -33,6 +34,7 @@ function runCard(run, compact = false) {
 
   const header = createElement("div", "hub-run__head");
   header.append(createElement("strong", "hub-run__ticker", run.ticker || "종목 미정"));
+  appendMarketBadge(header, run.market, run.ticker);
   appendStatusBadge(header, run.status);
   link.append(header);
 

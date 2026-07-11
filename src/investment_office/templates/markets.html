@@ -1,0 +1,180 @@
+<!-- 공통 거시 환경과 미국·한국 시장 국면, 자료 품질을 관제하는 화면을 구성한다. -->
+{% extends "base.html" %}
+
+{% block title %}시장 관제실 · Signal Foundry{% endblock %}
+{% block body_class %}page-markets{% endblock %}
+
+{% block head %}
+  <link rel="stylesheet" href="/static/markets.css?v=1" />
+{% endblock %}
+
+{% block content %}
+  <header class="market-command" aria-labelledby="market-command-title">
+    <div class="market-command__copy">
+      <p class="section-code">WORKSPACE / 01 / CROSS-MARKET CONTROL</p>
+      <h1 id="market-command-title">시장 관제실</h1>
+      <p>
+        공통 거시 신호를 기준선으로 삼고 미국과 한국 시장의 국면을 따로 판정합니다.
+        자료 공백과 공급원 준비 상태를 먼저 확인한 뒤 종목 분석으로 이동하세요.
+      </p>
+    </div>
+    <div class="market-command__telemetry">
+      <span class="telemetry-label">LAST ASSEMBLED</span>
+      <time id="markets-generated-at" class="telemetry-time mono" datetime="">확인 중</time>
+      <div class="market-command__actions">
+        <span id="markets-overall-status" class="status-badge" data-tone="idle">자료 조립 중</span>
+        <button id="markets-refresh" class="button button--secondary" type="button">
+          관제 자료 새로고침
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <p id="markets-feedback" class="market-feedback" role="status" aria-live="polite">
+    공통 거시지표와 시장별 품질 상태를 불러오는 중입니다.
+  </p>
+
+  <section class="macro-station surface" aria-labelledby="macro-station-title">
+    <div class="section-heading macro-station__heading">
+      <div>
+        <p class="section-code">G-01 / SHARED MACRO RAIL</p>
+        <h2 id="macro-station-title">공통 거시 기준선</h2>
+      </div>
+      <div class="macro-station__status">
+        <span>수집 상태</span>
+        <strong id="common-macro-status" class="mono">확인 중</strong>
+      </div>
+    </div>
+    <ol id="common-macro-list" class="macro-rail" aria-label="공통 거시지표">
+      <li class="macro-cell macro-cell--loading">거시 자료를 조립하고 있습니다.</li>
+    </ol>
+    <div class="macro-station__foot">
+      <p id="common-macro-summary">금리, 달러, 원화 환율, 변동성, 원유와 위험 선호를 함께 확인합니다.</p>
+      <ul id="common-macro-warnings" class="inline-warning-list" aria-label="공통 거시 자료 경고"></ul>
+    </div>
+  </section>
+
+  <section class="market-grid" aria-labelledby="market-grid-title">
+    <div class="section-heading market-grid__heading">
+      <div>
+        <p class="section-code">M-01 / REGIME SPLIT</p>
+        <h2 id="market-grid-title">시장별 국면 판정</h2>
+      </div>
+      <p>같은 거시 신호라도 시장별 민감도와 자료 완성도를 분리해 봅니다.</p>
+    </div>
+
+    <article id="market-panel-us" class="market-panel" data-market="us" aria-labelledby="market-us-title">
+      <header class="market-panel__header">
+        <div>
+          <span class="market-panel__code mono">US / 01</span>
+          <h3 id="market-us-title">미국 시장</h3>
+        </div>
+        <span id="market-us-quality-badge" class="quality-stamp" data-state="unknown">판정 대기</span>
+      </header>
+      <dl class="market-panel__scoreboard">
+        <div>
+          <dt>REGIME CONFIDENCE</dt>
+          <dd id="market-us-confidence" class="mono">—</dd>
+        </div>
+        <div>
+          <dt>POSITION CAP FACTOR</dt>
+          <dd id="market-us-cap" class="mono">—</dd>
+        </div>
+      </dl>
+      <section class="regime-board" aria-labelledby="market-us-regime-title">
+        <h4 id="market-us-regime-title">신호 축</h4>
+        <ol id="market-us-regime" class="regime-axis-list"></ol>
+      </section>
+      <aside id="market-us-quality" class="quality-rail" data-state="unknown">
+        <div class="quality-rail__stripe" aria-hidden="true"></div>
+        <div>
+          <strong>자료 품질 확인 중</strong>
+          <ul></ul>
+        </div>
+      </aside>
+    </article>
+
+    <article id="market-panel-kr" class="market-panel" data-market="kr" aria-labelledby="market-kr-title">
+      <header class="market-panel__header">
+        <div>
+          <span class="market-panel__code mono">KR / 02</span>
+          <h3 id="market-kr-title">한국 시장</h3>
+        </div>
+        <span id="market-kr-quality-badge" class="quality-stamp" data-state="unknown">판정 대기</span>
+      </header>
+      <dl class="market-panel__scoreboard">
+        <div>
+          <dt>REGIME CONFIDENCE</dt>
+          <dd id="market-kr-confidence" class="mono">—</dd>
+        </div>
+        <div>
+          <dt>POSITION CAP FACTOR</dt>
+          <dd id="market-kr-cap" class="mono">—</dd>
+        </div>
+      </dl>
+      <section class="regime-board" aria-labelledby="market-kr-regime-title">
+        <h4 id="market-kr-regime-title">신호 축</h4>
+        <ol id="market-kr-regime" class="regime-axis-list"></ol>
+      </section>
+      <aside id="market-kr-quality" class="quality-rail" data-state="unknown">
+        <div class="quality-rail__stripe" aria-hidden="true"></div>
+        <div>
+          <strong>자료 품질 확인 중</strong>
+          <ul></ul>
+        </div>
+      </aside>
+    </article>
+  </section>
+
+  <section class="source-station surface" aria-labelledby="source-station-title">
+    <div class="section-heading source-station__heading">
+      <div>
+        <p class="section-code">D-01 / SOURCE READINESS</p>
+        <h2 id="source-station-title">데이터 공급원 준비 상태</h2>
+      </div>
+      <dl class="source-station__metrics" aria-label="공급원 준비 집계">
+        <div><dt>READY</dt><dd id="sources-ready" class="mono">—</dd></div>
+        <div><dt>BLOCKED</dt><dd id="sources-blocked" class="mono">—</dd></div>
+        <div><dt>TOTAL</dt><dd id="sources-total" class="mono">—</dd></div>
+      </dl>
+    </div>
+    <div class="source-filters" role="group" aria-label="공급원 시장 필터">
+      <button class="source-filter is-active" type="button" data-source-filter="all" aria-pressed="true">전체</button>
+      <button class="source-filter" type="button" data-source-filter="us" aria-pressed="false">미국</button>
+      <button class="source-filter" type="button" data-source-filter="kr" aria-pressed="false">한국</button>
+    </div>
+    <div class="source-table-wrap">
+      <table class="source-table">
+        <caption class="sr-only">시장 데이터 공급원의 용도, 신뢰도, 신선도와 분석 준비 상태</caption>
+        <thead>
+          <tr>
+            <th scope="col">공급원</th>
+            <th scope="col">시장·자료</th>
+            <th scope="col">신뢰·신선도</th>
+            <th scope="col">분석 준비</th>
+            <th scope="col">확인 사항</th>
+          </tr>
+        </thead>
+        <tbody id="source-table-body">
+          <tr><td colspan="5" class="source-table__empty">공급원 정책을 불러오는 중입니다.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <aside class="market-action-rail" aria-label="다음 분석 단계">
+    <div>
+      <span class="section-code">NEXT HUMAN ACTION</span>
+      <strong>시장 국면과 자료 공백을 확인했나요?</strong>
+      <p>조건이 맞는 시장에서만 종목을 접수하고, 최종 주문 판단은 직접 내리세요.</p>
+    </div>
+    <div class="market-action-rail__links">
+      <a class="button button--primary" href="/analysis">개별 종목 분석</a>
+      <a class="button button--secondary" href="/discovery">시장별 후보 찾기</a>
+    </div>
+  </aside>
+{% endblock %}
+
+{% block scripts %}
+  <script type="module" src="/static/markets.js?v=1"></script>
+{% endblock %}

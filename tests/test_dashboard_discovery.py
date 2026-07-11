@@ -11,6 +11,7 @@ TEMPLATE = (PACKAGE_ROOT / "templates" / "discovery.html").read_text(encoding="u
 def test_discovery_page_exposes_stock_recommendation_pipeline() -> None:
     for field_id in (
         "discovery-screen-form",
+        "discovery-market",
         "discovery-strategy",
         "discovery-feedback",
         "discovery-candidate-list",
@@ -32,8 +33,8 @@ def test_discovery_page_uses_server_history_instead_of_browser_only_state() -> N
     assert 'discoveryAnalyze: "/api/discoveries/analyze"' in (
         PACKAGE_ROOT / "static" / "site-common.js"
     ).read_text(encoding="utf-8")
-    assert "JSON.stringify({ strategy, limit: 8 })" in SCRIPT
-    assert "JSON.stringify({ tickers })" in SCRIPT
+    assert "JSON.stringify({ market, strategy, limit: 8 })" in SCRIPT
+    assert "JSON.stringify({ market, tickers })" in SCRIPT
     assert "?workflow=discovery&limit=200" in SCRIPT
     assert "discovery_batch_id" in SCRIPT
     assert "localStorage" not in SCRIPT

@@ -1,6 +1,7 @@
 // 완료 이력 페이지에서 모든 실행을 필터링하고 저장된 상세 결과를 조회한다.
 import {
   API,
+  appendMarketBadge,
   appendStatusBadge,
   appendWorkflowBadge,
   asArray,
@@ -87,6 +88,7 @@ function renderHistoryList() {
     button.dataset.historyRun = run.run_id;
     const identity = createElement("span", "history-row__identity");
     identity.append(createElement("strong", "", run.ticker || "종목 미정"));
+    appendMarketBadge(identity, run.market, run.ticker);
     appendWorkflowBadge(identity, run.workflow);
     const status = createElement("span", "history-row__status");
     appendStatusBadge(status, run.status);
@@ -170,6 +172,7 @@ function renderDetail({ run, tasks, committee, minutes, archive }) {
   title.id = "history-detail-title";
   titleGroup.append(title);
   const badges = createElement("div", "badge-row");
+  appendMarketBadge(badges, run.market, run.ticker);
   appendStatusBadge(badges, run.status);
   appendWorkflowBadge(badges, run.workflow);
   header.append(titleGroup, badges);

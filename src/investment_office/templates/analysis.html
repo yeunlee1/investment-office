@@ -7,7 +7,7 @@
 {% block content %}
   <header class="page-heading">
     <div>
-      <p class="section-code">WORKSPACE / 01 / USER SELECTED</p>
+      <p class="section-code">WORKSPACE / 02 / USER SELECTED</p>
       <h1>개별 종목 파악</h1>
       <p>
         직접 선택한 종목을 여섯 분석 역할이 교차 검증합니다. 업무를 추가로 맡기거나 회의를 열고,
@@ -41,9 +41,17 @@
       </header>
       <form id="individual-analysis-form" class="form-stack" novalidate>
         <div class="field-group">
+          <label for="individual-market">분석 시장</label>
+          <select id="individual-market" name="market" aria-describedby="individual-market-help">
+            <option value="us">미국 시장 · 영문 티커</option>
+            <option value="kr">한국 시장 · 6자리 종목코드</option>
+          </select>
+          <small id="individual-market-help">시장에 맞는 가격·공시·거시 자료 공급원을 사용합니다.</small>
+        </div>
+        <div class="field-group">
           <label for="individual-ticker">종목 코드</label>
           <div class="ticker-field">
-            <span aria-hidden="true">$</span>
+            <span id="individual-ticker-symbol" aria-hidden="true">$</span>
             <input
               id="individual-ticker"
               name="ticker"
@@ -91,11 +99,18 @@
         <span class="status-badge status-badge--scheduled">ONE-TIME</span>
       </header>
       <form id="schedule-form" class="form-stack" novalidate>
+        <div class="field-group">
+          <label for="schedule-market">분석 시장</label>
+          <select id="schedule-market" name="market">
+            <option value="us">미국 시장 · 영문 티커</option>
+            <option value="kr">한국 시장 · 6자리 종목코드</option>
+          </select>
+        </div>
         <div class="field-row">
           <div class="field-group">
             <label for="schedule-ticker">종목 코드</label>
             <div class="ticker-field">
-              <span aria-hidden="true">$</span>
+              <span id="schedule-ticker-symbol" aria-hidden="true">$</span>
               <input
                 id="schedule-ticker"
                 name="ticker"
@@ -178,7 +193,10 @@
       <header class="selected-run__header">
         <div>
           <p class="section-code">SELECTED RUN</p>
-          <h3 id="selected-run-title"><span id="selected-run-ticker">종목 미선택</span></h3>
+          <h3 id="selected-run-title">
+            <span id="selected-run-ticker">종목 미선택</span>
+            <span id="selected-run-market" class="market-badge" data-market="unknown">시장 미정</span>
+          </h3>
         </div>
         <span id="selected-run-status" class="status-badge" data-status="idle">대기</span>
       </header>

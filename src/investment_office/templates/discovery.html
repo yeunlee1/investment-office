@@ -7,10 +7,10 @@
 {% block content %}
   <header class="page-heading page-heading--discovery">
     <div>
-      <p class="section-code">WORKSPACE / 02 / MARKET SCREENED</p>
+      <p class="section-code">WORKSPACE / 03 / MARKET SCREENED</p>
       <h1>종목 추천</h1>
       <p>
-        완료된 일봉 데이터로 미국 주식 후보를 먼저 비교합니다. 상위 후보 중 최대 세 종목만 에이전트
+        선택한 시장의 완료 일봉 데이터로 주식 후보를 먼저 비교합니다. 상위 후보 중 최대 세 종목만 에이전트
         심층 분석에 보내고, 모든 결과는 사람의 검토를 기다립니다.
       </p>
     </div>
@@ -77,6 +77,14 @@
       </header>
       <form id="discovery-screen-form" class="form-stack" novalidate>
         <div class="field-group">
+          <label for="discovery-market">탐색 시장</label>
+          <select id="discovery-market" name="market">
+            <option value="us">미국 시장 · 대형주 유니버스</option>
+            <option value="kr">한국 시장 · 대표주 유니버스</option>
+          </select>
+          <small>시장별 유니버스와 가격 공급원을 분리해 비교합니다.</small>
+        </div>
+        <div class="field-group">
           <label for="discovery-strategy">비교 전략</label>
           <select id="discovery-strategy" name="strategy">
             <option value="balanced">균형형 · 추세와 안정성 균형</option>
@@ -86,7 +94,7 @@
           <small>전략은 정량 점수의 가중치만 바꾸며 매수를 보장하지 않습니다.</small>
         </div>
         <p id="discovery-feedback" class="form-feedback" role="status" aria-live="polite">
-          전략을 선택하고 미국 주식 유니버스를 스캔하세요.
+          시장과 전략을 선택해 주식 유니버스를 스캔하세요.
         </p>
         <button class="button button--primary button--wide" type="submit">
           <span>추천 후보 스캔</span>

@@ -1,6 +1,7 @@
 // 종목추천 페이지에서 1차 선별과 복수 심층분석, 서버 기반 완료 이력을 관리한다.
 import {
   API,
+  appendMarketBadge,
   appendStatusBadge,
   asArray,
   asObject,
@@ -19,6 +20,7 @@ import {
 
 const elements = {
   screenForm: document.querySelector("#discovery-screen-form"),
+  market: document.querySelector("#discovery-market"),
   strategy: document.querySelector("#discovery-strategy"),
   feedback: document.querySelector("#discovery-feedback"),
   universe: document.querySelector("#discovery-universe"),
@@ -44,6 +46,10 @@ const state = {
 
 const ACTIVE = new Set(["queued", "running"]);
 const DECIDED = new Set(["approved", "rejected", "hold", "complete"]);
+
+function marketLabel(market) {
+  return market === "kr" ? "한국" : "미국";
+}
 
 function setStage(stage, status, label) {
   const element = document.querySelector(`[data-discovery-stage="${stage}"]`);
@@ -97,6 +103,7 @@ function renderCandidates(candidates) {
     const identity = createElement("span", "candidate-card__identity");
     identity.append(createElement("small", "", `RANK ${candidate.rank ?? index + 1} · ${verdictLabel(candidate.verdict)}`));
     identity.append(createElement("strong", "", ticker || "종목 미정"));
+    appendMarketBadge(identity, candidate.market || state.discovery?.market, ticker);
     const score = createElement("span", "candidate-card__score", Number.isFinite(Number(candidate.score)) ? Number(candidate.score).toFixed(2) : "—");
     label.append(checkbox, identity, score);
     item.append(label);
@@ -183,6 +190,7 @@ function renderRuns() {
     if (currentBatch.has(run.run_id)) item.dataset.latest = "true";
     const head = createElement("div", "discovery-run-card__header");
     head.append(createElement("strong", "", run.ticker || "종목 미정"));
+    appendMarketBadge(head, run.market, run.ticker);
     appendStatusBadge(head, run.status);
     if (currentBatch.has(run.run_id)) head.append(createElement("span", "batch-badge", "최근 배치"));
     const progress = runProgress(run);
@@ -256,14 +264,15 @@ async function submitScreen(event) {
   state.loading = true;
   setFormDisabled(elements.screenForm, true);
   updateSelection();
+  const market = elements.market?.value === "kr" ? "kr" : "us";
   const strategy = elements.strategy?.value || "balanced";
-  setFeedback(elements.feedback, "미국 대형주 30종목의 완료 일봉을 비교하고 있습니다.");
+  setFeedback(elements.feedback, `${marketLabel(market)} 대표주 30종목의 완료 일봉을 비교하고 있습니다.`);
   setStage("scan", "active", "조회 중");
   setStage("shortlist", "idle", "대기");
   try {
     const payload = await requestJson(API.discoveryScreen, {
       method: "POST",
-      body: JSON.stringify({ strategy, limit: 8 }),
+      body: JSON.stringify({ market, strategy, limit: 8 }),
     }, 120_000);
     renderDiscovery(asObject(payload.discovery));
     setFeedback(elements.feedback, `${asArray(payload.discovery?.candidates).length}개 후보를 선별했습니다. 매수 보장이 아닌 심층검토 대상입니다.`, "success");
@@ -296,9 +305,10 @@ async function submitAnalysis(event) {
   setStage("agents", "active", "배정 중");
   setFeedback(elements.feedback, `${tickers.join(", ")} 심층분석을 여섯 에이전트에게 배정하고 있습니다.`);
   try {
+    const market = state.discovery?.market === "kr" ? "kr" : "us";
     const payload = await requestJson(API.discoveryAnalyze, {
       method: "POST",
-      body: JSON.stringify({ tickers }),
+      body: JSON.stringify({ market, tickers }),
     }, 45_000);
     const created = asArray(payload.runs);
     state.latestBatchId = created[0]?.discovery_batch_id || null;
@@ -316,6 +326,16 @@ async function submitAnalysis(event) {
 
 elements.screenForm?.addEventListener("submit", submitScreen);
 elements.analyzeForm?.addEventListener("submit", submitAnalysis);
+elements.market?.addEventListener("change", () => {
+  state.discovery = null;
+  renderCandidates([]);
+  setText(elements.universe, "—");
+  setText(elements.qualified, "—");
+  setText(elements.shortlist, "—");
+  ["scan", "shortlist", "agents", "review"].forEach((stage) => setStage(stage, "idle", "대기"));
+  const market = elements.market?.value === "kr" ? "kr" : "us";
+  setFeedback(elements.feedback, `${marketLabel(market)} 시장 유니버스를 선택했습니다. 후보 스캔을 다시 실행하세요.`);
+});
 elements.candidateList?.addEventListener("change", (event) => {
   const input = event.target.closest('input[name="discovery-ticker"]');
   if (input instanceof HTMLInputElement) updateSelection(input);

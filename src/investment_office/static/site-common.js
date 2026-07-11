@@ -22,6 +22,8 @@ export const API = Object.freeze({
   committeeMinutes: (sessionId) => `/api/committee/${encodeURIComponent(sessionId)}/minutes`,
   review: (runId) => `/api/runs/${encodeURIComponent(runId)}/review`,
   events: "/api/events",
+  marketOverview: "/api/markets/overview",
+  dataSources: "/api/data-sources",
 });
 
 export const ROLE_ORDER = Object.freeze([
@@ -200,6 +202,23 @@ export function appendWorkflowBadge(parent, workflow) {
   const info = workflowInfo(workflow);
   const badge = createElement("span", "workflow-badge", info.label);
   badge.dataset.tone = info.tone;
+  parent.append(badge);
+  return badge;
+}
+
+export function marketInfo(market, ticker = "") {
+  const normalized = String(market || "").trim().toLowerCase();
+  if (normalized === "us") return { key: "us", label: "미국" };
+  if (normalized === "kr") return { key: "kr", label: "한국" };
+  const symbol = String(ticker || "").trim().toUpperCase();
+  if (/^(?:KR-)?\d{6}$/.test(symbol)) return { key: "kr", label: "한국" };
+  return { key: "unknown", label: "시장 미정" };
+}
+
+export function appendMarketBadge(parent, market, ticker = "") {
+  const info = marketInfo(market, ticker);
+  const badge = createElement("span", "market-badge", info.label);
+  badge.dataset.market = info.key;
   parent.append(badge);
   return badge;
 }

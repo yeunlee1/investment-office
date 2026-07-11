@@ -987,6 +987,39 @@ a:focus-visible,
   color: #4d3470;
 }
 
+.market-badge {
+  display: inline-flex;
+  min-height: 24px;
+  padding: 4px 7px;
+  border: 1px solid var(--line-strong);
+  background: var(--paper-muted);
+  align-items: center;
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.market-badge[data-market="us"] {
+  border-color: var(--cyan);
+  background: var(--cyan-pale);
+  color: #0c5a57;
+}
+
+.market-badge[data-market="kr"] {
+  border-color: #a47810;
+  background: var(--hazard-pale);
+  color: #664a08;
+}
+
+.selected-run__header h3 .market-badge {
+  margin-left: 7px;
+  transform: translateY(-4px);
+}
+
 /* 공통 목록과 동적 카드 */
 .record-list,
 .compact-list,
@@ -3562,11 +3595,16 @@ button.history-item {
     scroll-snap-align: none;
   }
 
-  .site-nav__link:nth-child(-n + 2) {
+  .site-nav__link:nth-child(-n + 4) {
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   }
 
   .site-nav__link:nth-child(even) {
+    border-right: 0;
+  }
+
+  .site-nav__link:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
     border-right: 0;
   }
 

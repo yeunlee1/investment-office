@@ -37,11 +37,19 @@
             <span>운영 허브</span>
           </a>
           <a
+            class="site-nav__link{% if request.url.path == '/markets' %} is-active{% endif %}"
+            href="/markets"
+            {% if request.url.path == '/markets' %}aria-current="page"{% endif %}
+          >
+            <span class="site-nav__index">01</span>
+            <span>시장 관제실</span>
+          </a>
+          <a
             class="site-nav__link{% if request.url.path == '/analysis' %} is-active{% endif %}"
             href="/analysis"
             {% if request.url.path == '/analysis' %}aria-current="page"{% endif %}
           >
-            <span class="site-nav__index">01</span>
+            <span class="site-nav__index">02</span>
             <span>개별 종목</span>
           </a>
           <a
@@ -49,7 +57,7 @@
             href="/discovery"
             {% if request.url.path == '/discovery' %}aria-current="page"{% endif %}
           >
-            <span class="site-nav__index">02</span>
+            <span class="site-nav__index">03</span>
             <span>종목 추천</span>
           </a>
           <a
@@ -57,7 +65,7 @@
             href="/history"
             {% if request.url.path == '/history' %}aria-current="page"{% endif %}
           >
-            <span class="site-nav__index">03</span>
+            <span class="site-nav__index">04</span>
             <span>완료 이력</span>
           </a>
         </nav>

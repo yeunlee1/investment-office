@@ -207,11 +207,15 @@ def _fact(
     )
 
 
-def _macro_result(*, future_sections: tuple[str, ...] = ()) -> MacroContextResult:
+def _macro_result(
+    *,
+    future_sections: tuple[str, ...] = (),
+    stale_fact_ids: tuple[str, ...] = (),
+) -> MacroContextResult:
     source = _source(
-        "official:fred:macro",
-        "Federal Reserve Economic Data",
-        "https://fred.stlouisfed.org/graph/fredgraph.csv",
+        "official:test:macro",
+        "공식 거시 대역",
+        "https://example.com/official-macro",
     )
     specifications = (
         ("dgs2", "미국 국채 2년물 금리", 4.2, "percent", "macro.rates"),
@@ -277,6 +281,7 @@ def _macro_result(*, future_sections: tuple[str, ...] = ()) -> MacroContextResul
         sources=(source,),
         facts=facts,
         sections=sections,
+        stale_fact_ids=stale_fact_ids,
         future_section_ids=future_sections,
     )
 
@@ -423,6 +428,28 @@ async def test_partial_provider_failure_is_parallel_and_becomes_explicit_section
     assert result.fundamentals and result.news == []
     assert result.macro == []
     assert result.regime.confidence == 0
+
+
+@pytest.mark.asyncio
+async def test_stale_macro_facts_are_not_used_for_regime_signals() -> None:
+    instrument = _instrument()
+    pipeline = ResearchPipeline(
+        macro_client=_MacroClient(
+            _macro_result(stale_fact_ids=("macro:vix", "macro:vix_change"))
+        ),
+        company_client=_CompanyClient(_company_result(instrument)),
+        now_factory=lambda: COLLECTED_AT,
+    )
+
+    result = await pipeline.collect(instrument, _snapshot())
+
+    assert result.regime.regime.volatility is RegimeState.UNKNOWN
+    assert result.regime.confidence == 0.8
+    assert "macro:vix" not in result.regime.evidence_fact_ids
+    assert set(result.bundle.quality.stale_fact_ids) >= {
+        "macro:vix",
+        "macro:vix_change",
+    }
 
 
 @pytest.mark.asyncio

@@ -26,8 +26,8 @@ from investment_office.services.ecos_context import (
 )
 from investment_office.services.macro_context import (
     SECTION_TITLES,
-    FredMacroContextClient,
     MacroContextResult,
+    OfficialMacroContextClient,
     build_ecos_unavailable_section,
 )
 from investment_office.services.market_data import EODSnapshot
@@ -128,7 +128,7 @@ class ResearchPipeline:
     def __init__(
         self,
         *,
-        macro_client: MacroCollector | FredMacroContextClient,
+        macro_client: MacroCollector | OfficialMacroContextClient,
         company_client: CompanyCollector | OfficialCompanyResearchClient,
         ecos_client: EcosCollector | EcosMacroContextClient | None = None,
         regime_evaluator: RegimeEvaluator | MarketRegimeEvaluator | None = None,
@@ -256,7 +256,19 @@ class ResearchPipeline:
             sections=merged.sections,
             quality=quality,
         )
-        regime = _evaluate_regime(self.regime_evaluator, instrument.market, bundle.facts)
+        excluded_regime_fact_ids = {
+            *bundle.quality.stale_fact_ids,
+            *bundle.quality.blocked_fact_ids,
+        }
+        regime = _evaluate_regime(
+            self.regime_evaluator,
+            instrument.market,
+            tuple(
+                fact
+                for fact in bundle.facts
+                if fact.fact_id not in excluded_regime_fact_ids
+            ),
+        )
         source_by_id = {source.source_id: source for source in bundle.sources}
         fact_by_id = {fact.fact_id: fact for fact in bundle.facts}
 
@@ -292,30 +304,30 @@ class ResearchPipeline:
     async def get_macro_context(self, market: MarketId | None = None) -> MacroContextResult:
         """15분 캐시와 단일화를 적용해 공통 거시 자료를 시장별 보완 구역과 반환한다."""
 
-        fred_task = self._get_fred_context()
+        common_task = self._get_common_macro_context()
         if market is not MarketId.KR:
-            return await fred_task
-        fred, ecos = await asyncio.gather(fred_task, self._get_ecos_context())
+            return await common_task
+        common, ecos = await asyncio.gather(common_task, self._get_ecos_context())
         return MacroContextResult(
-            sources=(*fred.sources, *ecos.sources),
-            facts=(*fred.facts, *ecos.facts),
-            sections=(*fred.sections, *ecos.sections),
-            stale_fact_ids=_unique((*fred.stale_fact_ids, *ecos.stale_fact_ids)),
-            future_section_ids=fred.future_section_ids,
+            sources=(*common.sources, *ecos.sources),
+            facts=(*common.facts, *ecos.facts),
+            sections=(*common.sections, *ecos.sections),
+            stale_fact_ids=_unique((*common.stale_fact_ids, *ecos.stale_fact_ids)),
+            future_section_ids=common.future_section_ids,
         )
 
-    async def _get_fred_context(self) -> MacroContextResult:
-        now = _require_aware(self._now_factory(), "FRED 캐시 확인 시각")
+    async def _get_common_macro_context(self) -> MacroContextResult:
+        now = _require_aware(self._now_factory(), "공통 거시 캐시 확인 시각")
         cached = self._valid_macro_cache(now)
         if cached is None:
             async with self._macro_lock:
-                now = _require_aware(self._now_factory(), "FRED 캐시 확인 시각")
+                now = _require_aware(self._now_factory(), "공통 거시 캐시 확인 시각")
                 cached = self._valid_macro_cache(now)
                 if cached is None:
                     cached = await self._fetch_macro_uncached()
                     self._macro_cache = cached
                     self._macro_cached_at = _require_aware(
-                        self._now_factory(), "FRED 캐시 저장 시각"
+                        self._now_factory(), "공통 거시 캐시 저장 시각"
                     )
         return cached
 
@@ -366,7 +378,7 @@ class ResearchPipeline:
         try:
             return await self.macro_client.fetch()
         except Exception as exc:
-            reason = _failure_reason("FRED 공통 거시 자료", exc)
+            reason = _failure_reason("공통 공식 거시 자료", exc)
             return MacroContextResult(
                 sources=(),
                 facts=(),

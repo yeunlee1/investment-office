@@ -281,7 +281,7 @@ _POLICIES: Final = (
     _source(
         SourceId.YAHOO_FINANCE,
         "Yahoo Finance 비공식 차트",
-        frozenset({Market.US}),
+        _ALL_MARKETS,
         frozenset({DataDomain.PRICE}),
         Officiality.UNOFFICIAL,
         TrustLevel.LOW,

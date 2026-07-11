@@ -11,12 +11,24 @@ from urllib.parse import unquote
 import httpx
 
 from investment_office.services.instrument_identity import normalize_instrument
-from investment_office.services.market_data import EODSnapshot, YahooFinanceClient, _EODBar
+from investment_office.services.market_data import (
+    EODSnapshot,
+    InsufficientMarketDataError,
+    YahooFinanceClient,
+    YahooFinanceError,
+    _EODBar,
+)
 from investment_office.services.research_contracts import InstrumentRef, MarketId
 
 KOREA_STOCK_PRICE_URL: Final = (
     "https://apis.data.go.kr/1160100/service/"
     "GetStockSecuritiesInfoService/getStockPriceInfo"
+)
+YAHOO_KOREA_CHART_URL: Final = (
+    "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+)
+YAHOO_KOREA_FALLBACK_CHART_URL: Final = (
+    "https://query2.finance.yahoo.com/v8/finance/chart/{ticker}"
 )
 TIINGO_META_URL: Final = "https://api.tiingo.com/tiingo/daily/{ticker}"
 TIINGO_PRICES_URL: Final = "https://api.tiingo.com/tiingo/daily/{ticker}/prices"
@@ -44,6 +56,21 @@ _TIINGO_CONFIRMED_AFTER: Final = time(20, 0)
 _TIINGO_FALLBACK_GAP: Final = (
     "Tiingo 조정 일봉을 사용할 수 없어 Yahoo Finance 대체 자료를 사용했습니다."
 )
+_KOREA_YAHOO_FALLBACK_GAP: Final = (
+    "공공데이터포털 가격을 사용할 수 없어 비공식 Yahoo Finance 한국 시세를 "
+    "대체 자료로 사용했습니다."
+)
+_KOREA_YAHOO_QUALITY_GAPS: Final = (
+    "Yahoo Finance의 한국 조정주가 적용 방식은 공식 거래소 자료와 다를 수 있어 "
+    "기업행사 전후 지표를 재확인해야 합니다.",
+    "KOSPI·KOSDAQ 시장 구분은 Yahoo Finance 접미사와 응답 메타데이터를 "
+    "바탕으로 확인했으므로 공식 시장 자료로 재검증해야 합니다.",
+)
+_KOREA_YAHOO_CANDIDATES: Final = (
+    (".KS", "KOSPI", "KSC"),
+    (".KQ", "KOSDAQ", "KOE"),
+)
+_KOREA_YAHOO_INSTRUMENT_TYPES: Final = frozenset({"EQUITY", "ETF"})
 _HISTORY_DAYS: Final = 730
 _MAX_ROWS: Final = 500
 
@@ -220,22 +247,35 @@ class TiingoPriceProvider:
 class FallbackPriceProvider:
     """우선 공급자 장애 시 명시적 품질 공백과 함께 대체 공급자를 사용한다."""
 
-    def __init__(self, primary: PriceProvider, fallback: PriceProvider) -> None:
+    def __init__(
+        self,
+        primary: PriceProvider,
+        fallback: PriceProvider,
+        *,
+        fallback_on: tuple[type[PriceGatewayError], ...] = (PriceGatewayError,),
+        fallback_gap: str = _TIINGO_FALLBACK_GAP,
+    ) -> None:
         if primary.market is not fallback.market:
             raise ValueError("우선 공급자와 대체 공급자의 시장이 서로 다릅니다.")
+        if not fallback_on:
+            raise ValueError("대체 공급자를 사용할 오류 유형이 하나 이상 필요합니다.")
         self.market = primary.market
         self.primary = primary
         self.fallback = fallback
+        self.fallback_on = fallback_on
+        self.fallback_gap = fallback_gap
 
     async def fetch_eod_snapshot(self, instrument: InstrumentRef) -> EODSnapshot:
         try:
             return await self.primary.fetch_eod_snapshot(instrument)
-        except PriceGatewayError:
+        except PriceGatewayError as exc:
+            if not isinstance(exc, self.fallback_on):
+                raise
             snapshot = await self.fallback.fetch_eod_snapshot(instrument)
             return snapshot.model_copy(
                 update={
                     "data_gaps": list(
-                        dict.fromkeys([*snapshot.data_gaps, _TIINGO_FALLBACK_GAP])
+                        dict.fromkeys([*snapshot.data_gaps, self.fallback_gap])
                     )
                 }
             )
@@ -256,7 +296,7 @@ class KoreaPublicDataPriceProvider:
     ) -> None:
         if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds는 0보다 커야 합니다.")
-        self.service_key = service_key.strip() if service_key else None
+        self.service_key = service_key.strip() if service_key and service_key.strip() else None
         self.timeout_seconds = float(timeout_seconds)
         self.client = client
         self._now_factory = now_factory or (lambda: datetime.now(UTC))
@@ -321,6 +361,123 @@ class KoreaPublicDataPriceProvider:
         return now.astimezone(UTC)
 
 
+class KoreaYahooPriceProvider:
+    """한국 거래소 메타데이터를 검증한 Yahoo 일봉을 장애 대체로 제공한다."""
+
+    market = MarketId.KR
+
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = 20.0,
+        client: httpx.AsyncClient | None = None,
+        now_factory: Callable[[], datetime] | None = None,
+    ) -> None:
+        if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds는 0보다 커야 합니다.")
+        self.timeout_seconds = float(timeout_seconds)
+        self.client = client
+        self._now_factory = now_factory or (lambda: datetime.now(UTC))
+
+    async def fetch_eod_snapshot(self, instrument: InstrumentRef) -> EODSnapshot:
+        _require_market(instrument, self.market)
+        fetched_at = self._aware_now()
+
+        for suffix, market_name, expected_exchange in _korea_yahoo_candidates(instrument):
+            yahoo_symbol = f"{instrument.symbol}{suffix}"
+            try:
+                response = await self._get(yahoo_symbol)
+                result = _decode_korea_yahoo_result(response)
+                meta = _yahoo_required_mapping(result.get("meta"), "chart.result[0].meta")
+                _validate_korea_yahoo_meta(
+                    meta,
+                    requested_symbol=yahoo_symbol,
+                    expected_exchange=expected_exchange,
+                )
+                bars, parse_gaps = YahooFinanceClient._parse_bars(result)
+                bars = YahooFinanceClient._drop_incomplete_regular_session(
+                    bars,
+                    meta,
+                    fetched_at,
+                )
+                if len(bars) < 2:
+                    raise InsufficientPriceDataError(
+                        f"{instrument.symbol}의 완료된 유효 Yahoo 한국 일봉이 2개 미만입니다."
+                    )
+                snapshot = YahooFinanceClient._build_snapshot(
+                    ticker=instrument.symbol,
+                    exchange=market_name,
+                    currency="KRW",
+                    timezone="Asia/Seoul",
+                    source_url=str(response.request.url),
+                    fetched_at=fetched_at,
+                    bars=bars,
+                    parse_gaps=[*parse_gaps, *_KOREA_YAHOO_QUALITY_GAPS],
+                )
+                return snapshot
+            except (
+                InsufficientMarketDataError,
+                InsufficientPriceDataError,
+                PriceMarketMismatchError,
+                PriceProviderResponseError,
+                YahooFinanceError,
+            ):
+                continue
+
+        raise PriceProviderResponseError(
+            f"{instrument.symbol}의 KOSPI·KOSDAQ Yahoo 후보를 모두 검증했으나 "
+            "일치하는 한국 일봉을 찾지 못했습니다."
+        )
+
+    async def _get(self, yahoo_symbol: str) -> httpx.Response:
+        params = {
+            "range": "2y",
+            "interval": "1d",
+            "events": "div,splits",
+            "includeAdjustedClose": "true",
+        }
+        url = YAHOO_KOREA_CHART_URL.format(ticker=yahoo_symbol)
+        try:
+            response = await self._request(url, params)
+            if response.status_code == httpx.codes.TOO_MANY_REQUESTS:
+                response = await self._request(
+                    YAHOO_KOREA_FALLBACK_CHART_URL.format(ticker=yahoo_symbol),
+                    params,
+                )
+            if response.is_error:
+                raise PriceProviderResponseError(
+                    f"Yahoo Finance 한국 일봉 요청이 HTTP {response.status_code}로 실패했습니다."
+                )
+        except PriceProviderResponseError:
+            raise
+        except httpx.RequestError:
+            raise PriceProviderResponseError(
+                "Yahoo Finance 한국 일봉 요청 중 네트워크 오류가 발생했습니다."
+            ) from None
+        return response
+
+    async def _request(
+        self,
+        url: str,
+        params: Mapping[str, str],
+    ) -> httpx.Response:
+        if self.client is not None:
+            return await self.client.get(
+                url,
+                params=params,
+                headers=_REQUEST_HEADERS,
+                timeout=self.timeout_seconds,
+            )
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            return await client.get(url, params=params, headers=_REQUEST_HEADERS)
+
+    def _aware_now(self) -> datetime:
+        now = self._now_factory()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("now_factory는 시간대가 있는 datetime을 반환해야 합니다.")
+        return now.astimezone(UTC)
+
+
 class MarketPriceGateway:
     """InstrumentRef 시장에 맞는 가격 공급자를 선택한다."""
 
@@ -370,6 +527,7 @@ def build_default_price_gateway(
     tiingo_client: httpx.AsyncClient | None = None,
     korea_service_key: str | None = None,
     korea_client: httpx.AsyncClient | None = None,
+    korea_yahoo_client: httpx.AsyncClient | None = None,
     timeout_seconds: float = 20.0,
     now_factory: Callable[[], datetime] | None = None,
 ) -> MarketPriceGateway:
@@ -386,11 +544,20 @@ def build_default_price_gateway(
                 ),
                 YahooPriceProvider(yahoo_client),
             ),
-            KoreaPublicDataPriceProvider(
-                korea_service_key,
-                timeout_seconds=timeout_seconds,
-                client=korea_client,
-                now_factory=now_factory,
+            FallbackPriceProvider(
+                KoreaPublicDataPriceProvider(
+                    korea_service_key,
+                    timeout_seconds=timeout_seconds,
+                    client=korea_client,
+                    now_factory=now_factory,
+                ),
+                KoreaYahooPriceProvider(
+                    timeout_seconds=timeout_seconds,
+                    client=korea_yahoo_client,
+                    now_factory=now_factory,
+                ),
+                fallback_on=(MissingPriceApiKeyError, PriceProviderResponseError),
+                fallback_gap=_KOREA_YAHOO_FALLBACK_GAP,
             ),
         )
     )
@@ -429,6 +596,100 @@ def _decode_tiingo_payload(response: httpx.Response, label: str) -> object:
     ):
         raise PriceProviderResponseError(f"Tiingo {label} 요청이 논리 오류로 거부되었습니다.")
     return payload
+
+
+def _korea_yahoo_candidates(
+    instrument: InstrumentRef,
+) -> tuple[tuple[str, str, str], ...]:
+    exchange = instrument.exchange.strip().upper()
+    if exchange == "KRX":
+        return _KOREA_YAHOO_CANDIDATES
+    if exchange == "KOSPI":
+        return (_KOREA_YAHOO_CANDIDATES[0],)
+    if exchange == "KOSDAQ":
+        return (_KOREA_YAHOO_CANDIDATES[1],)
+    raise PriceMarketMismatchError(
+        f"한국 Yahoo 대체 공급자는 KRX·KOSPI·KOSDAQ 요청만 지원합니다. exchange={exchange}"
+    )
+
+
+def _decode_korea_yahoo_result(response: httpx.Response) -> Mapping[str, object]:
+    try:
+        payload: object = response.json()
+    except ValueError as exc:
+        raise PriceProviderResponseError(
+            "Yahoo Finance 한국 일봉 응답이 유효한 JSON이 아닙니다."
+        ) from exc
+    root = _yahoo_required_mapping(payload, "응답 최상위 객체")
+    chart = _yahoo_required_mapping(root.get("chart"), "chart")
+    if chart.get("error") is not None:
+        raise PriceProviderResponseError(
+            "Yahoo Finance 한국 일봉 조회가 종목 오류로 거부되었습니다."
+        )
+    results = chart.get("result")
+    if not isinstance(results, Sequence) or isinstance(results, (str, bytes, bytearray)):
+        raise PriceProviderResponseError("Yahoo Finance 한국 일봉 결과가 배열이 아닙니다.")
+    if not results:
+        raise PriceProviderResponseError("Yahoo Finance 한국 일봉 결과가 비어 있습니다.")
+    return _yahoo_required_mapping(results[0], "chart.result[0]")
+
+
+def _yahoo_required_mapping(value: object, field: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise PriceProviderResponseError(
+            f"Yahoo Finance 한국 일봉의 {field} 값이 객체가 아닙니다."
+        )
+    return cast(Mapping[str, object], value)
+
+
+def _yahoo_required_text(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise PriceProviderResponseError(
+            f"Yahoo Finance 한국 일봉의 {field} 값이 비어 있습니다."
+        )
+    return value.strip()
+
+
+def _validate_korea_yahoo_meta(
+    meta: Mapping[str, object],
+    *,
+    requested_symbol: str,
+    expected_exchange: str,
+) -> None:
+    symbol = _yahoo_required_text(meta.get("symbol"), "meta.symbol").upper()
+    currency = _yahoo_required_text(meta.get("currency"), "meta.currency").upper()
+    exchange = _yahoo_required_text(meta.get("exchangeName"), "meta.exchangeName").upper()
+    exchange_timezone = _yahoo_required_text(
+        meta.get("exchangeTimezoneName"),
+        "meta.exchangeTimezoneName",
+    )
+    instrument_type = _yahoo_required_text(
+        meta.get("instrumentType"),
+        "meta.instrumentType",
+    ).upper()
+    if symbol != requested_symbol:
+        raise PriceMarketMismatchError(
+            f"Yahoo Finance 한국 일봉 종목이 요청과 다릅니다. {symbol} != {requested_symbol}"
+        )
+    if currency != "KRW":
+        raise PriceMarketMismatchError(
+            f"Yahoo Finance 한국 일봉 통화가 KRW가 아닙니다. currency={currency}"
+        )
+    if exchange != expected_exchange:
+        raise PriceMarketMismatchError(
+            "Yahoo Finance 한국 일봉 거래소가 요청 접미사와 다릅니다. "
+            f"exchange={exchange}"
+        )
+    if exchange_timezone != "Asia/Seoul":
+        raise PriceMarketMismatchError(
+            "Yahoo Finance 한국 일봉 시간대가 Asia/Seoul이 아닙니다. "
+            f"timezone={exchange_timezone}"
+        )
+    if instrument_type not in _KOREA_YAHOO_INSTRUMENT_TYPES:
+        raise PriceMarketMismatchError(
+            "Yahoo Finance 한국 일봉 자산 유형이 주식 또는 ETF가 아닙니다. "
+            f"instrumentType={instrument_type}"
+        )
 
 
 def _decode_tiingo_mapping(

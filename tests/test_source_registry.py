@@ -46,6 +46,7 @@ def test_market_and_domain_query_is_priority_ordered() -> None:
         SourceId.KRX,
         SourceId.DATA_GO_KR,
         SourceId.KIS,
+        SourceId.YAHOO_FINANCE,
     }
     assert [source.priority for source in sources] == sorted(source.priority for source in sources)
 
@@ -127,6 +128,7 @@ def test_yahoo_is_low_trust_fallback_with_cross_check_warning() -> None:
 
     assert policy.trust_level is TrustLevel.LOW
     assert policy.priority is SourcePriority.FALLBACK
+    assert policy.markets == frozenset({Market.US, Market.KR})
     assert validation.ready is True
     assert validation.warnings
 

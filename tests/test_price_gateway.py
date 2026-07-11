@@ -12,6 +12,7 @@ from investment_office.services.price_gateway import (
     CommitteePriceGateway,
     InsufficientPriceDataError,
     KoreaPublicDataPriceProvider,
+    KoreaYahooPriceProvider,
     MarketPriceGateway,
     MissingPriceApiKeyError,
     PriceMarketMismatchError,
@@ -150,6 +151,48 @@ def _yahoo_payload() -> dict[str, Any]:
                             }
                         ],
                         "adjclose": [{"adjclose": [100.0, 101.0]}],
+                    },
+                }
+            ],
+            "error": None,
+        }
+    }
+
+
+def _yahoo_kr_payload(
+    *,
+    symbol: str = "005930.KS",
+    exchange: str = "KSC",
+    currency: str = "KRW",
+    timezone: str = "Asia/Seoul",
+    instrument_type: str = "EQUITY",
+) -> dict[str, Any]:
+    return {
+        "chart": {
+            "result": [
+                {
+                    "meta": {
+                        "currency": currency,
+                        "symbol": symbol,
+                        "exchangeName": exchange,
+                        "instrumentType": instrument_type,
+                        "exchangeTimezoneName": timezone,
+                        "currentTradingPeriod": {
+                            "regular": {"start": 1_900_000_000, "end": 1_900_023_400}
+                        },
+                    },
+                    "timestamp": [1_704_110_400, 1_704_196_800],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [69_500.0, 70_000.0],
+                                "high": [70_500.0, 71_000.0],
+                                "low": [69_000.0, 69_800.0],
+                                "close": [70_000.0, 70_500.0],
+                                "volume": [10_000_000, 11_000_000],
+                            }
+                        ],
+                        "adjclose": [{"adjclose": [69_800.0, 70_300.0]}],
                     },
                 }
             ],
@@ -463,6 +506,215 @@ async def test_default_gateway_fetches_and_computes_korea_eod_snapshot() -> None
     assert snapshot.source_url.startswith("https://apis.data.go.kr/")
     assert "encoded" not in snapshot.source_url
     assert any("조정주가가 아니므로" in gap for gap in snapshot.data_gaps)
+
+
+@pytest.mark.asyncio
+async def test_korea_yahoo_provider_selects_kospi_from_exchange_hint() -> None:
+    observed_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed_paths.append(request.url.path)
+        return httpx.Response(200, json=_yahoo_kr_payload(), request=request)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        snapshot = await KoreaYahooPriceProvider(
+            client=http_client,
+            now_factory=lambda: NOW,
+        ).fetch_eod_snapshot(_instrument(exchange="KOSPI"))
+    finally:
+        await http_client.aclose()
+
+    assert observed_paths == ["/v8/finance/chart/005930.KS"]
+    assert snapshot.ticker == "005930"
+    assert snapshot.exchange == "KOSPI"
+    assert snapshot.currency == "KRW"
+    assert snapshot.timezone == "Asia/Seoul"
+    assert snapshot.current_close == 70_300.0
+    assert any("조정주가 적용 방식" in gap for gap in snapshot.data_gaps)
+    assert any("시장 구분" in gap for gap in snapshot.data_gaps)
+
+
+@pytest.mark.asyncio
+async def test_korea_yahoo_provider_checks_kospi_then_selects_kosdaq() -> None:
+    observed_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed_paths.append(request.url.path)
+        if request.url.path.endswith(".KS"):
+            return httpx.Response(404, text="상세 오류 본문", request=request)
+        return httpx.Response(
+            200,
+            json=_yahoo_kr_payload(symbol="005930.KQ", exchange="KOE"),
+            request=request,
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        snapshot = await KoreaYahooPriceProvider(
+            client=http_client,
+            now_factory=lambda: NOW,
+        ).fetch_eod_snapshot(_instrument())
+    finally:
+        await http_client.aclose()
+
+    assert observed_paths == [
+        "/v8/finance/chart/005930.KS",
+        "/v8/finance/chart/005930.KQ",
+    ]
+    assert snapshot.exchange == "KOSDAQ"
+
+
+@pytest.mark.asyncio
+async def test_korea_yahoo_provider_uses_only_kosdaq_from_exchange_hint() -> None:
+    observed_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed_paths.append(request.url.path)
+        return httpx.Response(
+            200,
+            json=_yahoo_kr_payload(symbol="005930.KQ", exchange="KOE"),
+            request=request,
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        snapshot = await KoreaYahooPriceProvider(
+            client=http_client,
+            now_factory=lambda: NOW,
+        ).fetch_eod_snapshot(_instrument(exchange="KOSDAQ"))
+    finally:
+        await http_client.aclose()
+
+    assert observed_paths == ["/v8/finance/chart/005930.KQ"]
+    assert snapshot.exchange == "KOSDAQ"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"symbol": "000660.KS"},
+        {"currency": "USD"},
+        {"exchange": "KOE"},
+        {"timezone": "America/New_York"},
+        {"instrument_type": "CRYPTOCURRENCY"},
+    ],
+)
+async def test_korea_yahoo_provider_rejects_metadata_mismatch(
+    overrides: dict[str, str],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_yahoo_kr_payload(**overrides), request=request)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        provider = KoreaYahooPriceProvider(client=http_client, now_factory=lambda: NOW)
+        with pytest.raises(PriceProviderResponseError, match="모두 검증"):
+            await provider.fetch_eod_snapshot(_instrument(exchange="KOSPI"))
+    finally:
+        await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_default_korea_gateway_falls_back_to_yahoo_without_public_key() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_yahoo_kr_payload(), request=request)
+
+    yahoo_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        gateway = build_default_price_gateway(
+            korea_service_key=None,
+            korea_yahoo_client=yahoo_client,
+            now_factory=lambda: NOW,
+        )
+        snapshot = await gateway.fetch_eod_snapshot(_instrument())
+    finally:
+        await yahoo_client.aclose()
+
+    assert calls == 1
+    assert snapshot.exchange == "KOSPI"
+    assert any("비공식 Yahoo Finance 한국 시세" in gap for gap in snapshot.data_gaps)
+    assert any("조정주가 적용 방식" in gap for gap in snapshot.data_gaps)
+    assert any("시장 구분" in gap for gap in snapshot.data_gaps)
+
+
+@pytest.mark.asyncio
+async def test_default_korea_gateway_falls_back_after_public_response_error() -> None:
+    def public_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="노출하면 안 되는 전체 오류 본문", request=request)
+
+    def yahoo_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_yahoo_kr_payload(), request=request)
+
+    public_client = httpx.AsyncClient(transport=httpx.MockTransport(public_handler))
+    yahoo_client = httpx.AsyncClient(transport=httpx.MockTransport(yahoo_handler))
+    try:
+        gateway = build_default_price_gateway(
+            korea_service_key="secret",
+            korea_client=public_client,
+            korea_yahoo_client=yahoo_client,
+            now_factory=lambda: NOW,
+        )
+        snapshot = await gateway.fetch_eod_snapshot(_instrument())
+    finally:
+        await public_client.aclose()
+        await yahoo_client.aclose()
+
+    assert snapshot.exchange == "KOSPI"
+    assert any("공공데이터포털 가격" in gap for gap in snapshot.data_gaps)
+
+
+@pytest.mark.asyncio
+async def test_default_korea_gateway_does_not_fallback_for_insufficient_history() -> None:
+    yahoo_calls = 0
+
+    def public_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_kr_payload(_kr_items(1)), request=request)
+
+    def yahoo_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal yahoo_calls
+        yahoo_calls += 1
+        return httpx.Response(200, json=_yahoo_kr_payload(), request=request)
+
+    public_client = httpx.AsyncClient(transport=httpx.MockTransport(public_handler))
+    yahoo_client = httpx.AsyncClient(transport=httpx.MockTransport(yahoo_handler))
+    try:
+        gateway = build_default_price_gateway(
+            korea_service_key="secret",
+            korea_client=public_client,
+            korea_yahoo_client=yahoo_client,
+            now_factory=lambda: NOW,
+        )
+        with pytest.raises(InsufficientPriceDataError):
+            await gateway.fetch_eod_snapshot(_instrument())
+    finally:
+        await public_client.aclose()
+        await yahoo_client.aclose()
+
+    assert yahoo_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_korea_yahoo_provider_does_not_expose_http_error_body() -> None:
+    secret_body = "외부 공급자 비밀 오류 본문"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text=secret_body, request=request)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        provider = KoreaYahooPriceProvider(client=http_client, now_factory=lambda: NOW)
+        with pytest.raises(PriceProviderResponseError) as caught:
+            await provider.fetch_eod_snapshot(_instrument(exchange="KOSPI"))
+    finally:
+        await http_client.aclose()
+
+    assert secret_body not in str(caught.value)
 
 
 def test_pure_korea_parser_sorts_and_preserves_ohlcv() -> None:

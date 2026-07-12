@@ -752,6 +752,7 @@ async def test_discovery_api_screens_then_runs_selected_candidates_with_human_ga
             assert discovery["omitted_count"] == 22
             assert len(discovery["candidates"]) == 8
             assert discovery["candidates"][0]["rank"] == 1
+            assert discovery["candidates"][0]["company_name"]
             assert discovery["candidates"][0]["verdict"] in {"review_first", "watch"}
             assert "매수 추천이 아니라" in discovery["safety_notice"]
 
@@ -768,6 +769,7 @@ async def test_discovery_api_screens_then_runs_selected_candidates_with_human_ga
             assert payload["human_approval_required"] is True
             assert payload["auto_trade"] is False
             assert [item["ticker"] for item in payload["runs"]] == selected
+            assert all(item["company_name"] for item in payload["runs"])
             assert payload["discovery_batch_id"]
             assert {
                 item["discovery_batch_id"] for item in payload["runs"]
@@ -778,10 +780,12 @@ async def test_discovery_api_screens_then_runs_selected_candidates_with_human_ga
                 completed = await wait_for_status(client, item["run_id"], "review")
                 assert completed["decision"]["auto_trade"] is False
                 assert completed["workflow"] == "discovery"
+                assert completed["company_name"]
                 assert completed["discovery_batch_id"] == payload["discovery_batch_id"]
 
             archive = await client.get("/api/decisions")
             assert {item["ticker"] for item in archive.json()["decisions"]} == set(selected)
+            assert all(item["company_name"] for item in archive.json()["decisions"])
 
             duplicate = await client.post(
                 "/api/discoveries/analyze",
@@ -828,6 +832,7 @@ async def test_api_accepts_explicit_korean_market_and_keeps_markets_separate() -
             assert discovery["market"] == "kr"
             assert discovery["universe_size"] == 30
             assert all(item["market"] == "kr" for item in discovery["candidates"])
+            assert all(item["company_name"] for item in discovery["candidates"])
 
             sources_response = await client.get("/api/data-sources")
             assert sources_response.status_code == 200

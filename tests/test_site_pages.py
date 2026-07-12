@@ -10,6 +10,7 @@ HUB = (TEMPLATES / "index.html").read_text(encoding="utf-8")
 ANALYSIS = (TEMPLATES / "analysis.html").read_text(encoding="utf-8")
 MARKETS = (TEMPLATES / "markets.html").read_text(encoding="utf-8")
 HISTORY = (TEMPLATES / "history.html").read_text(encoding="utf-8")
+HUB_SCRIPT = (STATIC / "hub.js").read_text(encoding="utf-8")
 ANALYSIS_SCRIPT = (STATIC / "analysis.js").read_text(encoding="utf-8")
 MARKETS_SCRIPT = (STATIC / "markets.js").read_text(encoding="utf-8")
 HISTORY_SCRIPT = (STATIC / "history.js").read_text(encoding="utf-8")
@@ -33,7 +34,8 @@ def test_site_uses_summary_hub_and_four_clear_pages() -> None:
         "hub-recent-runs",
     ):
         assert f'id="{field_id}"' in HUB
-    assert 'src="/static/hub.js?v=5"' in HUB
+    assert 'src="/static/hub.js?v=6"' in HUB
+    assert "const companyName = String(run.company_name" in HUB_SCRIPT
 
 
 def test_individual_page_exposes_all_site_operations() -> None:
@@ -44,6 +46,8 @@ def test_individual_page_exposes_all_site_operations() -> None:
         "schedule-market",
         "schedule-list",
         "analysis-run-list",
+        "selected-run-ticker",
+        "selected-run-symbol",
         "agent-strip",
         "agent-reports",
         "task-form",
@@ -65,9 +69,17 @@ def test_individual_page_exposes_all_site_operations() -> None:
     assert 'setAttribute("aria-valuenow"' in ANALYSIS_SCRIPT
     assert 'type="submit" data-review-decision=' not in ANALYSIS
     assert ANALYSIS.count('type="button" data-review-decision=') == 3
-    assert 'src="/static/analysis.js?v=5"' in ANALYSIS
+    assert 'src="/static/analysis.js?v=6"' in ANALYSIS
     assert "{ market, ticker, thesis }" in ANALYSIS_SCRIPT
     assert "{ market, ticker, scheduled_for:" in ANALYSIS_SCRIPT
+    assert '"run-row__symbol"' in ANALYSIS_SCRIPT
+    assert '"hub-run__symbol"' in HUB_SCRIPT
+    dedupe_condition = (
+        "companyName && ticker && companyName.toUpperCase() !== ticker.toUpperCase()"
+    )
+    assert dedupe_condition in HUB_SCRIPT
+    assert dedupe_condition in ANALYSIS_SCRIPT
+    assert "elements.selectedSymbol.hidden = !showSymbol" in ANALYSIS_SCRIPT
 
 
 def test_individual_page_connects_every_existing_operation_api() -> None:
@@ -88,6 +100,7 @@ def test_individual_page_connects_every_existing_operation_api() -> None:
     assert "저장된 최신 업무 상태" in ANALYSIS_SCRIPT
     assert "Object.keys(result).length ? result : progress" in ANALYSIS_SCRIPT
     assert "preventScroll: true" in ANALYSIS_SCRIPT
+    assert "const companyName = String(run.company_name" in ANALYSIS_SCRIPT
     assert '.catch(() => ({ tasks: [] }))' not in ANALYSIS_SCRIPT
     assert '["schedule", "scheduled_analysis"].includes(eventType)' in ANALYSIS_SCRIPT
     assert "state.committee?.session_id !== sessionId" in ANALYSIS_SCRIPT
@@ -96,7 +109,7 @@ def test_individual_page_connects_every_existing_operation_api() -> None:
 def test_chart_desk_is_accessible_and_responsive() -> None:
     assert 'id="decision-chart-analysis"' in ANALYSIS
     assert "차트 분석팀" in ANALYSIS
-    assert 'from "./chart-desk.js?v=5"' in ANALYSIS_SCRIPT
+    assert 'from "./chart-desk.js?v=6"' in ANALYSIS_SCRIPT
     assert "export function renderChartDesk" in CHART_DESK_SCRIPT
     assert 'target.setAttribute("role", "region")' in CHART_DESK_SCRIPT
     assert 'target.setAttribute("aria-label", title)' in CHART_DESK_SCRIPT
@@ -124,7 +137,7 @@ def test_history_page_filters_and_lazily_loads_saved_detail() -> None:
         "history-detail",
     ):
         assert f'id="{field_id}"' in HISTORY
-    assert 'src="/static/history.js?v=5"' in HISTORY
+    assert 'src="/static/history.js?v=6"' in HISTORY
     assert "`${API.runs}?limit=200`" in HISTORY_SCRIPT
     for contract in (
         "API.run(runId)",
@@ -139,8 +152,15 @@ def test_history_page_filters_and_lazily_loads_saved_detail() -> None:
     assert '.catch(() => ({ tasks: [] }))' not in HISTORY_SCRIPT
     assert "preventScroll: true" in HISTORY_SCRIPT
     assert "payload.run_id === state.selectedRunId" in HISTORY_SCRIPT
-    assert 'from "./chart-desk.js?v=5"' in HISTORY_SCRIPT
+    assert 'from "./chart-desk.js?v=6"' in HISTORY_SCRIPT
     assert "decision.chart_analysis" in HISTORY_SCRIPT
+    assert "const companyName = String(run.company_name" in HISTORY_SCRIPT
+    assert (
+        "companyName && ticker && companyName.toUpperCase() !== ticker.toUpperCase()"
+        in HISTORY_SCRIPT
+    )
+    assert 'placeholder="삼성전자 또는 005930"' in HISTORY
+    assert ".history-row__symbol" in STYLES
     hub_script = (STATIC / "hub.js").read_text(encoding="utf-8")
     assert 'summary?.by_status' in hub_script
     assert "preventScroll: true" in hub_script
@@ -197,7 +217,7 @@ def test_market_control_room_exposes_cross_market_quality_contract() -> None:
     assert "requestJson(API.dataSources)" in MARKETS_SCRIPT
     assert 'Promise.allSettled' in MARKETS_SCRIPT
     assert 'quality?.macro_eligible === true' in MARKETS_SCRIPT
-    assert 'src="/static/markets.js?v=5"' in MARKETS
+    assert 'src="/static/markets.js?v=6"' in MARKETS
     assert 'href="/static/markets.css?v=3"' in MARKETS
 
 

@@ -23,7 +23,7 @@ def test_discovery_page_exposes_stock_recommendation_pipeline() -> None:
         assert f'id="{field_id}"' in TEMPLATE
     for stage in ("scan", "shortlist", "agents", "review"):
         assert f'data-discovery-stage="{stage}"' in TEMPLATE
-    assert 'src="/static/discovery.js?v=5"' in TEMPLATE
+    assert 'src="/static/discovery.js?v=6"' in TEMPLATE
 
 
 def test_discovery_page_uses_server_history_instead_of_browser_only_state() -> None:
@@ -49,6 +49,15 @@ def test_discovery_page_limits_selection_and_links_to_full_workbench() -> None:
     assert 'href = `/analysis?run=${encodeURIComponent(run.run_id)}`' in SCRIPT
     assert 'href = `/history?run=${encodeURIComponent(run.run_id)}`' in SCRIPT
     assert "자동 주문은 생성되지 않습니다" in SCRIPT
+    assert "candidate.company_name" in SCRIPT
+    assert '"candidate-card__name"' in SCRIPT
+    assert '"candidate-card__symbol"' in SCRIPT
+    assert "checkbox.setAttribute(\"aria-label\"" in SCRIPT
+    assert "run.company_name" in SCRIPT
+    assert (
+        "storedCompanyName && ticker && storedCompanyName.toUpperCase() !== ticker.toUpperCase()"
+        in SCRIPT
+    )
     assert "사람 검토" in TEMPLATE
     assert "자동 주문 없음" in TEMPLATE
 
@@ -58,5 +67,15 @@ def test_discovery_markup_is_unique_and_responsive() -> None:
     assert len(ids) == len(set(ids))
     assert ".discovery-run-list" in STYLES
     assert ".candidate-card" in STYLES
+    assert ".candidate-card__name" in STYLES
+    assert ".candidate-card__symbol" in STYLES
     assert "@media (max-width: 1020px)" in STYLES
     assert "@media (max-width: 760px)" in STYLES
+    tablet_styles = STYLES.split("@media (max-width: 1020px)", 1)[1].split(
+        "@media (max-width: 760px)", 1
+    )[0]
+    assert ".discovery-run-list" in tablet_styles
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in tablet_styles
+    header_rule = re.search(r"\.discovery-run-card__header\s*\{([^}]*)\}", STYLES)
+    assert header_rule is not None
+    assert "flex-wrap: wrap;" in header_rule.group(1)

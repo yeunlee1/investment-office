@@ -19,8 +19,8 @@ import {
   setText,
   startSiteOperation,
   workflowInfo,
-} from "./site-common.js?v=5";
-import { renderChartDesk } from "./chart-desk.js?v=5";
+} from "./site-common.js?v=6";
+import { renderChartDesk } from "./chart-desk.js?v=6";
 
 const elements = {
   filterForm: document.querySelector("#history-filter-form"),
@@ -67,7 +67,8 @@ function applyFilters() {
   state.filtered = state.runs.filter((run) => {
     if (filters.workflow !== "all" && run.workflow !== filters.workflow) return false;
     if (filters.status !== "all" && run.status !== filters.status) return false;
-    if (filters.ticker && !String(run.ticker || "").includes(filters.ticker)) return false;
+    const searchableName = `${run.company_name || ""} ${run.ticker || ""}`.toUpperCase();
+    if (filters.ticker && !searchableName.includes(filters.ticker)) return false;
     const timestamp = new Date(run.completed_at || run.created_at || 0).getTime();
     return !cutoff || (Number.isFinite(timestamp) && timestamp >= cutoff);
   });
@@ -96,7 +97,12 @@ function renderHistoryList() {
       button.setAttribute("aria-disabled", "true");
     }
     const identity = createElement("span", "history-row__identity");
-    identity.append(createElement("strong", "", run.ticker || "종목 미정"));
+    const companyName = String(run.company_name || "").trim();
+    const ticker = String(run.ticker || "").trim();
+    identity.append(createElement("strong", "", companyName || ticker || "종목 미정"));
+    if (companyName && ticker && companyName.toUpperCase() !== ticker.toUpperCase()) {
+      identity.append(createElement("small", "history-row__symbol", ticker));
+    }
     appendMarketBadge(identity, run.market, run.ticker);
     appendWorkflowBadge(identity, run.workflow);
     const status = createElement("span", "history-row__status");
@@ -220,10 +226,15 @@ function renderDetail({ run, tasks, committee, minutes, archive }) {
   const header = createElement("header", "history-detail__head");
   const titleGroup = createElement("div");
   titleGroup.append(createElement("p", "eyebrow", `${workflowInfo(run.workflow).label} · ${formatDateTime(run.completed_at || run.created_at)}`));
-  const title = createElement("h2", "", run.ticker || "종목 미정");
+  const companyName = String(run.company_name || "").trim();
+  const ticker = String(run.ticker || "").trim();
+  const title = createElement("h2", "", companyName || ticker || "종목 미정");
   title.id = "history-detail-title";
   titleGroup.append(title);
   const badges = createElement("div", "badge-row");
+  if (companyName && ticker && companyName.toUpperCase() !== ticker.toUpperCase()) {
+    badges.append(createElement("span", "instrument-code", ticker));
+  }
   appendMarketBadge(badges, run.market, run.ticker);
   appendStatusBadge(badges, run.status);
   appendWorkflowBadge(badges, run.workflow);

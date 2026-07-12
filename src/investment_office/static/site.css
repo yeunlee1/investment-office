@@ -1877,8 +1877,30 @@ button.history-item {
 }
 
 .hub-run__ticker {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 850;
+  line-height: 1.15;
+}
+
+.hub-run__identity,
+.run-row__identity,
+.selected-run__identity {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.hub-run__symbol,
+.run-row__symbol,
+.selected-run__symbol {
+  color: var(--ink-soft);
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
 }
 
 .hub-run__meta {
@@ -2081,8 +2103,21 @@ button.history-item {
 }
 
 .run-row__head strong {
-  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+  font-family: var(--font-body);
   font-size: 14px;
+  font-weight: 850;
+  line-height: 1.15;
+}
+
+.selected-run__identity {
+  display: inline-grid;
+  vertical-align: middle;
+}
+
+.selected-run__symbol {
+  font-size: 10px;
+  letter-spacing: 0.06em;
 }
 
 .run-row__meta {
@@ -3557,10 +3592,26 @@ button.history-item {
   letter-spacing: 0.06em;
 }
 
-.candidate-card__identity strong {
-  font-family: var(--font-display);
+.candidate-card__name {
+  overflow-wrap: anywhere;
+  font-family: var(--font-body);
   font-size: 25px;
+  font-weight: 850;
+  line-height: 1.15;
   letter-spacing: -0.03em;
+}
+
+.candidate-card__identity .candidate-card__meta {
+  align-items: center;
+  gap: 6px;
+}
+
+.candidate-card__symbol {
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
 }
 
 .candidate-card__score {
@@ -3609,6 +3660,30 @@ button.history-item {
   font-weight: 750;
 }
 
+.discovery-run-card__identity {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.discovery-run-card__identity strong {
+  overflow-wrap: anywhere;
+  font-size: 17px;
+  line-height: 1.15;
+}
+
+.discovery-run-card__identity small {
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+}
+
+.discovery-run-card__header {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
 .batch-badge {
   padding: 4px 6px;
   border: 1px solid var(--cyan);
@@ -3647,8 +3722,26 @@ button.history-item {
 }
 
 .history-row__identity strong {
-  font-family: var(--font-display);
+  overflow-wrap: anywhere;
+  font-family: var(--font-body);
   font-size: 21px;
+  font-weight: 850;
+  line-height: 1.15;
+}
+
+.history-row__symbol,
+.instrument-code {
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.instrument-code {
+  padding: 4px 6px;
+  border: 1px solid var(--line-strong);
+  background: var(--paper-strong);
 }
 
 .history-row__status {
@@ -3954,6 +4047,10 @@ button.history-item {
 
   .discovery-layout {
     grid-template-columns: 1fr;
+  }
+
+  .discovery-run-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .discovery-control,

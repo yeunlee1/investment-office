@@ -194,7 +194,10 @@
         <div>
           <p class="section-code">SELECTED RUN</p>
           <h3 id="selected-run-title">
-            <span id="selected-run-ticker">종목 미선택</span>
+            <span class="selected-run__identity">
+              <span id="selected-run-ticker">종목 미선택</span>
+              <small id="selected-run-symbol" class="selected-run__symbol">—</small>
+            </span>
             <span id="selected-run-market" class="market-badge" data-market="unknown">시장 미정</span>
           </h3>
         </div>
@@ -550,5 +553,5 @@
 {% endblock %}
 
 {% block scripts %}
-  <script type="module" src="/static/analysis.js?v=5"></script>
+  <script type="module" src="/static/analysis.js?v=6"></script>
 {% endblock %}

@@ -27,6 +27,7 @@ from investment_office.domain import (
     SnapshotKind,
     utc_now,
 )
+from investment_office.services.candidate_discovery import find_universe_company_name
 from investment_office.services.chart_analysis import analyze_chart
 from investment_office.services.codex_provider import reconstruct_evidence
 from investment_office.services.event_broker import EventBroker
@@ -277,8 +278,13 @@ class InvestmentCommittee:
             raise ValueError("discovery_batch_id는 공백일 수 없습니다.")
 
         instrument = normalize_instrument(market, ticker)
+        resolved_company_name = find_universe_company_name(
+            instrument.market,
+            instrument.symbol,
+        )
         candidate = Candidate(
             ticker=instrument.storage_ticker,
+            company_name=resolved_company_name,
             thesis=thesis,
             source=CandidateSource.USER,
             attributes={
@@ -315,6 +321,7 @@ class InvestmentCommittee:
                 data=JSON_DICT_ADAPTER.validate_python(
                     {
                         "ticker": instrument.symbol,
+                        "company_name": candidate.company_name,
                         "market": instrument.market.value,
                         "canonical_id": instrument.canonical_id,
                         "thesis": candidate.thesis,
@@ -665,6 +672,10 @@ class InvestmentCommittee:
         decision = decisions[0].data if decisions else None
         workflow, discovery_batch_id = self._workflow_metadata(run, candidate)
         instrument = self._candidate_instrument(candidate)
+        company_name = candidate.company_name or find_universe_company_name(
+            instrument.market,
+            instrument.symbol,
+        )
 
         status = run.status.value
         if run.status is AnalysisRunStatus.COMPLETED:
@@ -684,6 +695,7 @@ class InvestmentCommittee:
             "run_id": str(run.id),
             "candidate_id": str(candidate.id),
             "ticker": instrument.symbol,
+            "company_name": company_name,
             "market": instrument.market.value,
             "canonical_id": instrument.canonical_id,
             "thesis": candidate.thesis,

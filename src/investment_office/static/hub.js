@@ -12,7 +12,7 @@ import {
   initSiteShell,
   requestJson,
   setText,
-} from "./site-common.js?v=5";
+} from "./site-common.js?v=6";
 
 const elements = {
   total: document.querySelector("#hub-total"),
@@ -33,7 +33,14 @@ function runCard(run, compact = false) {
   link.href = `/analysis?run=${encodeURIComponent(run.run_id)}`;
 
   const header = createElement("div", "hub-run__head");
-  header.append(createElement("strong", "hub-run__ticker", run.ticker || "종목 미정"));
+  const companyName = String(run.company_name || "").trim();
+  const ticker = String(run.ticker || "").trim();
+  const identity = createElement("span", "hub-run__identity");
+  identity.append(createElement("strong", "hub-run__ticker", companyName || ticker || "종목 미정"));
+  if (companyName && ticker && companyName.toUpperCase() !== ticker.toUpperCase()) {
+    identity.append(createElement("small", "hub-run__symbol", ticker));
+  }
+  header.append(identity);
   appendMarketBadge(header, run.market, run.ticker);
   appendStatusBadge(header, run.status);
   link.append(header);

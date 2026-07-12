@@ -52,9 +52,9 @@
         </select>
       </div>
       <div class="field-group">
-        <label for="history-ticker">종목 코드</label>
+        <label for="history-ticker">종목명 또는 코드</label>
         <div class="ticker-field">
-          <span aria-hidden="true">$</span>
+          <span aria-hidden="true">⌕</span>
           <input
             id="history-ticker"
             name="ticker"
@@ -63,8 +63,8 @@
             autocomplete="off"
             autocapitalize="characters"
             spellcheck="false"
-            maxlength="15"
-            placeholder="전체"
+            maxlength="40"
+            placeholder="삼성전자 또는 005930"
           />
         </div>
       </div>
@@ -122,5 +122,5 @@
 {% endblock %}
 
 {% block scripts %}
-  <script type="module" src="/static/history.js?v=5"></script>
+  <script type="module" src="/static/history.js?v=6"></script>
 {% endblock %}

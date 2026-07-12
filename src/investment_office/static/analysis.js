@@ -23,8 +23,8 @@ import {
   setText,
   startSiteOperation,
   statusInfo,
-} from "./site-common.js?v=5";
-import { renderChartDesk } from "./chart-desk.js?v=5";
+} from "./site-common.js?v=6";
+import { renderChartDesk } from "./chart-desk.js?v=6";
 
 const elements = {
   analysisForm: document.querySelector("#individual-analysis-form"),
@@ -48,6 +48,7 @@ const elements = {
   runList: document.querySelector("#analysis-run-list"),
   runFeedback: document.querySelector("#analysis-run-feedback"),
   selectedTicker: document.querySelector("#selected-run-ticker"),
+  selectedSymbol: document.querySelector("#selected-run-symbol"),
   selectedMarket: document.querySelector("#selected-run-market"),
   selectedStatus: document.querySelector("#selected-run-status"),
   selectedId: document.querySelector("#selected-run-id"),
@@ -190,7 +191,14 @@ function renderRunList() {
     button.type = "button";
     button.dataset.runId = run.run_id;
     const head = createElement("span", "run-row__head");
-    head.append(createElement("strong", "", run.ticker || "종목 미정"));
+    const companyName = String(run.company_name || "").trim();
+    const ticker = String(run.ticker || "").trim();
+    const identity = createElement("span", "run-row__identity");
+    identity.append(createElement("strong", "", companyName || ticker || "종목 미정"));
+    if (companyName && ticker && companyName.toUpperCase() !== ticker.toUpperCase()) {
+      identity.append(createElement("small", "run-row__symbol", ticker));
+    }
+    head.append(identity);
     appendMarketBadge(head, run.market, run.ticker);
     appendStatusBadge(head, run.status);
     const meta = createElement("span", "run-row__meta");
@@ -227,6 +235,8 @@ async function loadRunList({ preserveSelection = false } = {}) {
 function renderEmptyRun() {
   state.run = null;
   setText(elements.selectedTicker, "실행을 선택하세요.");
+  setText(elements.selectedSymbol, "—");
+  if (elements.selectedSymbol) elements.selectedSymbol.hidden = false;
   setText(elements.selectedMarket, "시장 미정");
   if (elements.selectedMarket) elements.selectedMarket.dataset.market = "unknown";
   setText(elements.selectedStatus, "대기");
@@ -269,7 +279,7 @@ async function selectRun(runId, { updateUrl = true } = {}) {
     renderSelectedRun();
     renderTasks(state.tasks);
     renderCommittee(state.committee);
-    setFeedback(elements.runFeedback, `${state.run.ticker || "선택 실행"} 상세를 표시합니다.`, "success");
+    setFeedback(elements.runFeedback, `${state.run.company_name || state.run.ticker || "선택 실행"} 상세를 표시합니다.`, "success");
     if (ACTIVE_RUN_STATUSES.has(state.run.status)) scheduleRunPolling();
     if (ACTIVE_COMMITTEE_STATUSES.has(state.committee?.status)) scheduleCommitteePolling();
   } catch (error) {
@@ -283,7 +293,12 @@ function renderSelectedRun() {
   const run = state.run || {};
   const status = statusInfo(run.status);
   const progress = runProgress(run);
-  setText(elements.selectedTicker, run.ticker, "종목 미정");
+  const companyName = String(run.company_name || "").trim();
+  const ticker = String(run.ticker || "").trim();
+  const showSymbol = Boolean(companyName && ticker && companyName.toUpperCase() !== ticker.toUpperCase());
+  setText(elements.selectedTicker, companyName || ticker, "종목 미정");
+  setText(elements.selectedSymbol, showSymbol ? ticker : "", "");
+  if (elements.selectedSymbol) elements.selectedSymbol.hidden = !showSymbol;
   const market = marketInfo(run.market, run.ticker);
   setText(elements.selectedMarket, market.label);
   if (elements.selectedMarket) elements.selectedMarket.dataset.market = market.key;

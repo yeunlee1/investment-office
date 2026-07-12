@@ -102,6 +102,26 @@ def test_lists_all_runs_newest_first_and_preserves_previous_decision() -> None:
     assert queued_candidate.ticker == entries[0].ticker
 
 
+def test_restores_known_company_name_without_modifying_legacy_candidate() -> None:
+    storage = InMemoryStorage()
+    service = DecisionArchiveService(storage=storage)
+    candidate, run = save_run(
+        storage,
+        ticker="AAPL",
+        requested_at=datetime(2026, 7, 11, 5, tzinfo=UTC),
+        status=AnalysisRunStatus.COMPLETED,
+    )
+    candidate.company_name = None
+    storage.save_candidate(candidate)
+
+    entry = service.get_entry(run.id)
+
+    assert entry.company_name == "애플"
+    stored_candidate = storage.get_candidate(candidate.id)
+    assert stored_candidate is not None
+    assert stored_candidate.company_name is None
+
+
 def test_uses_latest_decision_and_latest_human_review() -> None:
     storage = InMemoryStorage()
     service = DecisionArchiveService(storage=storage)

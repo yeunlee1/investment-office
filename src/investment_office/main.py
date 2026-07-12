@@ -900,6 +900,7 @@ def create_app(
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
+            created_run = service.build_run_payload(run.id)
             task = asyncio.create_task(
                 service.run_analysis(run.id),
                 name=f"discovery-analysis-{run.id}",
@@ -909,6 +910,7 @@ def create_app(
                 {
                     "run_id": str(run.id),
                     "ticker": ticker,
+                    "company_name": created_run["company_name"],
                     "market": payload.market.value,
                     "status": run.status.value,
                     "workflow": "discovery",

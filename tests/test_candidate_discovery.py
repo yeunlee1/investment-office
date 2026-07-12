@@ -14,6 +14,7 @@ from investment_office.services.candidate_discovery import (
     DiscoveryStrategy,
     DiscoveryVerdict,
     UniverseMember,
+    find_universe_company_name,
 )
 from investment_office.services.market_data import EODSnapshot, YahooFinanceError
 from investment_office.services.research_contracts import MarketId
@@ -82,18 +83,36 @@ class FakeMarketData:
 def test_starter_universe_is_explicit_unique_and_sector_diversified() -> None:
     tickers = [member.ticker for member in STARTER_UNIVERSE]
     sectors = {member.sector for member in STARTER_UNIVERSE}
+    all_members = STARTER_UNIVERSE + KR_STARTER_UNIVERSE
 
     assert 24 <= len(STARTER_UNIVERSE) <= 36
     assert len(tickers) == len(set(tickers))
     assert len(sectors) >= 8
     assert len(KR_STARTER_UNIVERSE) == 30
     assert all(member.market is MarketId.KR for member in KR_STARTER_UNIVERSE)
+    assert all(member.company_name.strip() for member in all_members)
+    assert len({(member.market, member.ticker) for member in all_members}) == 60
+    assert {member.ticker: member.company_name for member in STARTER_UNIVERSE}["AAPL"] == "애플"
+    korean_names = {member.ticker: member.company_name for member in KR_STARTER_UNIVERSE}
+    assert korean_names["105560"] == "KB금융"
+    assert korean_names["055550"] == "신한지주"
+    assert all(
+        find_universe_company_name(member.market, member.ticker)
+        == member.company_name
+        for member in all_members
+    )
+    assert find_universe_company_name(MarketId.US, "BRK.B") == "버크셔 해서웨이"
 
 
 @pytest.mark.asyncio
 async def test_korean_screen_uses_canonical_storage_ticker() -> None:
     universe = (
-        UniverseMember(market=MarketId.KR, ticker="005930", sector="semiconductors"),
+        UniverseMember(
+            market=MarketId.KR,
+            ticker="005930",
+            company_name="삼성전자",
+            sector="semiconductors",
+        ),
     )
     market = FakeMarketData({"KR-005930": snapshot("005930")})
     service = CandidateDiscoveryService(market_data=market, universe=universe)
@@ -103,15 +122,16 @@ async def test_korean_screen_uses_canonical_storage_ticker() -> None:
     assert market.calls == ["KR-005930"]
     assert result.market is MarketId.KR
     assert result.candidates[0].ticker == "005930"
+    assert result.candidates[0].company_name == "삼성전자"
     assert result.candidates[0].market is MarketId.KR
 
 
 @pytest.mark.asyncio
 async def test_screen_respects_concurrency_limit_and_returns_deterministic_ranking() -> None:
     universe = (
-        UniverseMember(ticker="AAPL", sector="technology"),
-        UniverseMember(ticker="MSFT", sector="technology"),
-        UniverseMember(ticker="JPM", sector="financials"),
+        UniverseMember(ticker="AAPL", company_name="애플", sector="technology"),
+        UniverseMember(ticker="MSFT", company_name="마이크로소프트", sector="technology"),
+        UniverseMember(ticker="JPM", company_name="제이피모건 체이스", sector="financials"),
     )
     market = FakeMarketData(
         {
@@ -133,6 +153,10 @@ async def test_screen_respects_concurrency_limit_and_returns_deterministic_ranki
     assert market.max_active == 2
     assert result.safety_notice == SAFETY_NOTICE
     assert [item.ticker for item in result.candidates] == ["AAPL", "MSFT"]
+    assert [item.company_name for item in result.candidates] == [
+        "애플",
+        "마이크로소프트",
+    ]
     assert result.qualified_count == 2
     assert result.omitted_count == 0
     assert [item.rank for item in result.candidates] == [1, 2]
@@ -149,8 +173,8 @@ async def test_screen_respects_concurrency_limit_and_returns_deterministic_ranki
 @pytest.mark.asyncio
 async def test_strategy_changes_weighting_without_changing_input_data() -> None:
     universe = (
-        UniverseMember(ticker="FAST", sector="technology"),
-        UniverseMember(ticker="CALM", sector="consumer_staples"),
+        UniverseMember(ticker="FAST", company_name="고속주", sector="technology"),
+        UniverseMember(ticker="CALM", company_name="안정주", sector="consumer_staples"),
     )
     market = FakeMarketData(
         {
@@ -174,9 +198,9 @@ async def test_strategy_changes_weighting_without_changing_input_data() -> None:
 @pytest.mark.asyncio
 async def test_data_shortage_and_lookup_failure_are_excluded_without_failing_screen() -> None:
     universe = (
-        UniverseMember(ticker="GOOD", sector="technology"),
-        UniverseMember(ticker="NEW", sector="technology"),
-        UniverseMember(ticker="FAIL", sector="financials"),
+        UniverseMember(ticker="GOOD", company_name="정상주", sector="technology"),
+        UniverseMember(ticker="NEW", company_name="신규주", sector="technology"),
+        UniverseMember(ticker="FAIL", company_name="실패주", sector="financials"),
     )
     market = FakeMarketData(
         {
@@ -196,6 +220,8 @@ async def test_data_shortage_and_lookup_failure_are_excluded_without_failing_scr
     assert excluded["NEW"].source_url is not None
     assert "시장 가격 데이터 조회 실패" in excluded["FAIL"].reasons[0]
     assert "HTTP 429" in excluded["FAIL"].reasons[0]
+    assert excluded["NEW"].company_name == "신규주"
+    assert excluded["FAIL"].company_name == "실패주"
     assert excluded["FAIL"].source_url is None
     assert result.evaluated_count == 1
     assert result.qualified_count == 1
@@ -206,7 +232,7 @@ async def test_data_shortage_and_lookup_failure_are_excluded_without_failing_scr
 async def test_validates_public_screen_arguments() -> None:
     service = CandidateDiscoveryService(
         market_data=FakeMarketData({"AAPL": snapshot("AAPL")}),
-        universe=(UniverseMember(ticker="AAPL", sector="technology"),),
+        universe=(UniverseMember(ticker="AAPL", company_name="애플", sector="technology"),),
     )
 
     with pytest.raises(ValueError, match="strategy"):

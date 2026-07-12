@@ -3,7 +3,7 @@ import {
   asObject,
   clearElement,
   createElement,
-} from "./site-common.js?v=5";
+} from "./site-common.js?v=6";
 
 function chartText(value, fallback = "—") {
   if (typeof value === "string" && value.trim()) return value.trim();

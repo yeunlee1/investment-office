@@ -19,7 +19,7 @@ import {
   setText,
   startSiteOperation,
   statusInfo,
-} from "./site-common.js?v=5";
+} from "./site-common.js?v=6";
 
 const elements = {
   screenForm: document.querySelector("#discovery-screen-form"),
@@ -68,6 +68,12 @@ function selectedTickers() {
     .filter(Boolean);
 }
 
+function selectedCompanyNames() {
+  return Array.from(elements.candidateList?.querySelectorAll('input[name="discovery-ticker"]:checked') || [])
+    .map((input) => input.dataset.companyName || input.value)
+    .filter(Boolean);
+}
+
 function updateSelection(changedInput = null) {
   let selected = selectedTickers();
   if (changedInput?.checked && selected.length > 3) {
@@ -97,6 +103,7 @@ function renderCandidates(candidates) {
   }
   values.forEach((candidate, index) => {
     const ticker = String(candidate.ticker || candidate.symbol || "").toUpperCase();
+    const companyName = String(candidate.company_name || "").trim() || ticker || "종목 미정";
     const item = createElement("li", "candidate-card");
     const label = createElement("label", "candidate-card__select");
     const checkbox = document.createElement("input");
@@ -104,10 +111,15 @@ function renderCandidates(candidates) {
     checkbox.name = "discovery-ticker";
     checkbox.value = ticker;
     checkbox.checked = index < 3;
+    checkbox.dataset.companyName = companyName;
+    checkbox.setAttribute("aria-label", `${companyName} (${ticker}) 심층 분석 후보 선택`);
     const identity = createElement("span", "candidate-card__identity");
     identity.append(createElement("small", "", `RANK ${candidate.rank ?? index + 1} · ${verdictLabel(candidate.verdict)}`));
-    identity.append(createElement("strong", "", ticker || "종목 미정"));
-    appendMarketBadge(identity, candidate.market || state.discovery?.market, ticker);
+    identity.append(createElement("strong", "candidate-card__name", companyName));
+    const identityMeta = createElement("span", "candidate-card__meta");
+    identityMeta.append(createElement("span", "candidate-card__symbol", ticker || "코드 미정"));
+    appendMarketBadge(identityMeta, candidate.market || state.discovery?.market, ticker);
+    identity.append(identityMeta);
     const score = createElement("span", "candidate-card__score", Number.isFinite(Number(candidate.score)) ? Number(candidate.score).toFixed(2) : "—");
     label.append(checkbox, identity, score);
     item.append(label);
@@ -196,7 +208,15 @@ function renderRuns() {
     const item = createElement("li", "discovery-run-card");
     if (currentBatch.has(run.run_id)) item.dataset.latest = "true";
     const head = createElement("div", "discovery-run-card__header");
-    head.append(createElement("strong", "", run.ticker || "종목 미정"));
+    const storedCompanyName = String(run.company_name || "").trim();
+    const ticker = String(run.ticker || "").trim();
+    const companyName = storedCompanyName || ticker || "종목 미정";
+    const identity = createElement("span", "discovery-run-card__identity");
+    identity.append(createElement("strong", "", companyName));
+    if (storedCompanyName && ticker && storedCompanyName.toUpperCase() !== ticker.toUpperCase()) {
+      identity.append(createElement("small", "", ticker));
+    }
+    head.append(identity);
     appendMarketBadge(head, run.market, run.ticker);
     appendStatusBadge(head, run.status);
     if (currentBatch.has(run.run_id)) head.append(createElement("span", "batch-badge", "최근 배치"));
@@ -204,7 +224,7 @@ function renderRuns() {
     const progressLine = createElement("div", "run-progress");
     const track = createElement("div", "progress-track");
     track.setAttribute("role", "progressbar");
-    track.setAttribute("aria-label", `${run.ticker || "종목"} 심층 분석 진행률`);
+    track.setAttribute("aria-label", `${companyName} (${run.ticker || "코드 미정"}) 심층 분석 진행률`);
     track.setAttribute("aria-valuenow", String(progress));
     track.setAttribute("aria-valuemin", "0");
     track.setAttribute("aria-valuemax", "100");
@@ -327,15 +347,17 @@ async function submitAnalysis(event) {
   }
   state.loading = true;
   elements.analyzeForm?.setAttribute("aria-busy", "true");
+  const selectedNames = selectedCompanyNames();
+  const selectionLabel = selectedNames.join(", ") || tickers.join(", ");
   const operation = startSiteOperation({
-    title: `${tickers.join(", ")} 심층 분석`,
+    title: `${selectionLabel} 심층 분석`,
     detail: "선택 종목을 투자팀에 배정하고 분석 실행 번호를 만들고 있습니다.",
   });
   if (elements.analyzeButton) elements.analyzeButton.disabled = true;
   setButtonBusy(elements.analyzeButton, true, "투자팀 배정 중");
   elements.candidateList?.querySelectorAll("input").forEach((input) => { input.disabled = true; });
   setStage("agents", "active", "배정 중");
-  setFeedback(elements.feedback, `${tickers.join(", ")} 심층분석을 여섯 에이전트에게 배정하고 있습니다.`);
+  setFeedback(elements.feedback, `${selectionLabel} 심층분석을 여섯 에이전트에게 배정하고 있습니다.`);
   try {
     const market = state.discovery?.market === "kr" ? "kr" : "us";
     const payload = await requestJson(API.discoveryAnalyze, {

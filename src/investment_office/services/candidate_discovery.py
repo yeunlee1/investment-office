@@ -19,80 +19,222 @@ SAFETY_NOTICE = (
 
 
 class UniverseMember(BaseModel):
-    """명시적 스타터 유니버스의 종목과 섹터."""
+    """명시적 스타터 유니버스의 종목명, 식별자와 섹터."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     market: MarketId = MarketId.US
     ticker: str = Field(min_length=1, max_length=10)
+    company_name: str = Field(min_length=1, max_length=80)
     sector: str = Field(min_length=1, max_length=80)
 
 
 STARTER_UNIVERSE: tuple[UniverseMember, ...] = (
-    UniverseMember(ticker="AAPL", sector="technology"),
-    UniverseMember(ticker="MSFT", sector="technology"),
-    UniverseMember(ticker="NVDA", sector="technology"),
-    UniverseMember(ticker="AVGO", sector="technology"),
-    UniverseMember(ticker="ORCL", sector="technology"),
-    UniverseMember(ticker="CRM", sector="technology"),
-    UniverseMember(ticker="GOOGL", sector="communication_services"),
-    UniverseMember(ticker="META", sector="communication_services"),
-    UniverseMember(ticker="NFLX", sector="communication_services"),
-    UniverseMember(ticker="TMUS", sector="communication_services"),
-    UniverseMember(ticker="AMZN", sector="consumer_discretionary"),
-    UniverseMember(ticker="TSLA", sector="consumer_discretionary"),
-    UniverseMember(ticker="HD", sector="consumer_discretionary"),
-    UniverseMember(ticker="MCD", sector="consumer_discretionary"),
-    UniverseMember(ticker="WMT", sector="consumer_staples"),
-    UniverseMember(ticker="COST", sector="consumer_staples"),
-    UniverseMember(ticker="PG", sector="consumer_staples"),
-    UniverseMember(ticker="KO", sector="consumer_staples"),
-    UniverseMember(ticker="BRK-B", sector="financials"),
-    UniverseMember(ticker="JPM", sector="financials"),
-    UniverseMember(ticker="V", sector="financials"),
-    UniverseMember(ticker="MA", sector="financials"),
-    UniverseMember(ticker="LLY", sector="health_care"),
-    UniverseMember(ticker="UNH", sector="health_care"),
-    UniverseMember(ticker="JNJ", sector="health_care"),
-    UniverseMember(ticker="ABBV", sector="health_care"),
-    UniverseMember(ticker="GE", sector="industrials"),
-    UniverseMember(ticker="CAT", sector="industrials"),
-    UniverseMember(ticker="XOM", sector="energy"),
-    UniverseMember(ticker="CVX", sector="energy"),
+    UniverseMember(ticker="AAPL", company_name="애플", sector="technology"),
+    UniverseMember(ticker="MSFT", company_name="마이크로소프트", sector="technology"),
+    UniverseMember(ticker="NVDA", company_name="엔비디아", sector="technology"),
+    UniverseMember(ticker="AVGO", company_name="브로드컴", sector="technology"),
+    UniverseMember(ticker="ORCL", company_name="오라클", sector="technology"),
+    UniverseMember(ticker="CRM", company_name="세일즈포스", sector="technology"),
+    UniverseMember(ticker="GOOGL", company_name="알파벳", sector="communication_services"),
+    UniverseMember(ticker="META", company_name="메타 플랫폼스", sector="communication_services"),
+    UniverseMember(ticker="NFLX", company_name="넷플릭스", sector="communication_services"),
+    UniverseMember(ticker="TMUS", company_name="티모바일 미국", sector="communication_services"),
+    UniverseMember(ticker="AMZN", company_name="아마존", sector="consumer_discretionary"),
+    UniverseMember(ticker="TSLA", company_name="테슬라", sector="consumer_discretionary"),
+    UniverseMember(ticker="HD", company_name="홈디포", sector="consumer_discretionary"),
+    UniverseMember(ticker="MCD", company_name="맥도날드", sector="consumer_discretionary"),
+    UniverseMember(ticker="WMT", company_name="월마트", sector="consumer_staples"),
+    UniverseMember(ticker="COST", company_name="코스트코", sector="consumer_staples"),
+    UniverseMember(ticker="PG", company_name="프록터 앤드 갬블", sector="consumer_staples"),
+    UniverseMember(ticker="KO", company_name="코카콜라", sector="consumer_staples"),
+    UniverseMember(ticker="BRK-B", company_name="버크셔 해서웨이", sector="financials"),
+    UniverseMember(ticker="JPM", company_name="제이피모건 체이스", sector="financials"),
+    UniverseMember(ticker="V", company_name="비자", sector="financials"),
+    UniverseMember(ticker="MA", company_name="마스터카드", sector="financials"),
+    UniverseMember(ticker="LLY", company_name="일라이 릴리", sector="health_care"),
+    UniverseMember(ticker="UNH", company_name="유나이티드헬스 그룹", sector="health_care"),
+    UniverseMember(ticker="JNJ", company_name="존슨앤드존슨", sector="health_care"),
+    UniverseMember(ticker="ABBV", company_name="애브비", sector="health_care"),
+    UniverseMember(ticker="GE", company_name="지이 에어로스페이스", sector="industrials"),
+    UniverseMember(ticker="CAT", company_name="캐터필러", sector="industrials"),
+    UniverseMember(ticker="XOM", company_name="엑슨모빌", sector="energy"),
+    UniverseMember(ticker="CVX", company_name="셰브론", sector="energy"),
 )
 
 KR_STARTER_UNIVERSE: tuple[UniverseMember, ...] = (
-    UniverseMember(market=MarketId.KR, ticker="005930", sector="semiconductors"),
-    UniverseMember(market=MarketId.KR, ticker="000660", sector="semiconductors"),
-    UniverseMember(market=MarketId.KR, ticker="005380", sector="automobiles"),
-    UniverseMember(market=MarketId.KR, ticker="000270", sector="automobiles"),
-    UniverseMember(market=MarketId.KR, ticker="035420", sector="internet"),
-    UniverseMember(market=MarketId.KR, ticker="035720", sector="internet"),
-    UniverseMember(market=MarketId.KR, ticker="207940", sector="biotechnology"),
-    UniverseMember(market=MarketId.KR, ticker="068270", sector="biotechnology"),
-    UniverseMember(market=MarketId.KR, ticker="373220", sector="batteries"),
-    UniverseMember(market=MarketId.KR, ticker="051910", sector="chemicals"),
-    UniverseMember(market=MarketId.KR, ticker="006400", sector="batteries"),
-    UniverseMember(market=MarketId.KR, ticker="105560", sector="financials"),
-    UniverseMember(market=MarketId.KR, ticker="055550", sector="financials"),
-    UniverseMember(market=MarketId.KR, ticker="086790", sector="financials"),
-    UniverseMember(market=MarketId.KR, ticker="316140", sector="financials"),
-    UniverseMember(market=MarketId.KR, ticker="012330", sector="auto_parts"),
-    UniverseMember(market=MarketId.KR, ticker="028260", sector="industrials"),
-    UniverseMember(market=MarketId.KR, ticker="009150", sector="electronics"),
-    UniverseMember(market=MarketId.KR, ticker="034730", sector="holding_companies"),
-    UniverseMember(market=MarketId.KR, ticker="096770", sector="energy"),
-    UniverseMember(market=MarketId.KR, ticker="015760", sector="utilities"),
-    UniverseMember(market=MarketId.KR, ticker="017670", sector="telecommunications"),
-    UniverseMember(market=MarketId.KR, ticker="030200", sector="telecommunications"),
-    UniverseMember(market=MarketId.KR, ticker="032830", sector="insurance"),
-    UniverseMember(market=MarketId.KR, ticker="010130", sector="materials"),
-    UniverseMember(market=MarketId.KR, ticker="066570", sector="electronics"),
-    UniverseMember(market=MarketId.KR, ticker="003670", sector="materials"),
-    UniverseMember(market=MarketId.KR, ticker="005490", sector="steel"),
-    UniverseMember(market=MarketId.KR, ticker="018260", sector="information_technology"),
-    UniverseMember(market=MarketId.KR, ticker="042700", sector="semiconductor_equipment"),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="005930",
+        company_name="삼성전자",
+        sector="semiconductors",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="000660",
+        company_name="SK하이닉스",
+        sector="semiconductors",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="005380",
+        company_name="현대차",
+        sector="automobiles",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="000270",
+        company_name="기아",
+        sector="automobiles",
+    ),
+    UniverseMember(market=MarketId.KR, ticker="035420", company_name="네이버", sector="internet"),
+    UniverseMember(market=MarketId.KR, ticker="035720", company_name="카카오", sector="internet"),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="207940",
+        company_name="삼성바이오로직스",
+        sector="biotechnology",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="068270",
+        company_name="셀트리온",
+        sector="biotechnology",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="373220",
+        company_name="LG에너지솔루션",
+        sector="batteries",
+    ),
+    UniverseMember(market=MarketId.KR, ticker="051910", company_name="LG화학", sector="chemicals"),
+    UniverseMember(market=MarketId.KR, ticker="006400", company_name="삼성SDI", sector="batteries"),
+    UniverseMember(market=MarketId.KR, ticker="105560", company_name="KB금융", sector="financials"),
+    UniverseMember(
+        market=MarketId.KR, ticker="055550", company_name="신한지주", sector="financials"
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="086790",
+        company_name="하나금융지주",
+        sector="financials",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="316140",
+        company_name="우리금융지주",
+        sector="financials",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="012330",
+        company_name="현대모비스",
+        sector="auto_parts",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="028260",
+        company_name="삼성물산",
+        sector="industrials",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="009150",
+        company_name="삼성전기",
+        sector="electronics",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="034730",
+        company_name="SK",
+        sector="holding_companies",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="096770",
+        company_name="SK이노베이션",
+        sector="energy",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="015760",
+        company_name="한국전력",
+        sector="utilities",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="017670",
+        company_name="SK텔레콤",
+        sector="telecommunications",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="030200",
+        company_name="KT",
+        sector="telecommunications",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="032830",
+        company_name="삼성생명",
+        sector="insurance",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="010130",
+        company_name="고려아연",
+        sector="materials",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="066570",
+        company_name="LG전자",
+        sector="electronics",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="003670",
+        company_name="포스코퓨처엠",
+        sector="materials",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="005490",
+        company_name="POSCO홀딩스",
+        sector="steel",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="018260",
+        company_name="삼성에스디에스",
+        sector="information_technology",
+    ),
+    UniverseMember(
+        market=MarketId.KR,
+        ticker="042700",
+        company_name="한미반도체",
+        sector="semiconductor_equipment",
+    ),
 )
+
+
+def find_universe_company_name(
+    market: MarketId | str,
+    ticker: str,
+) -> str | None:
+    """권위 있는 추천 유니버스에서 시장과 종목코드에 맞는 한글명을 찾는다."""
+
+    instrument = normalize_instrument(market, ticker)
+    universe = KR_STARTER_UNIVERSE if instrument.market is MarketId.KR else STARTER_UNIVERSE
+    return next(
+        (
+            member.company_name
+            for member in universe
+            if normalize_instrument(member.market, member.ticker).symbol
+            == instrument.symbol
+        ),
+        None,
+    )
 
 
 class DiscoveryStrategy(StrEnum):
@@ -143,6 +285,7 @@ class CandidateDiscoveryItem(BaseModel):
     rank: int | None = Field(default=None, ge=1)
     score: float = Field(ge=0, le=100)
     ticker: str
+    company_name: str
     sector: str
     verdict: DiscoveryVerdict
     reasons: list[str] = Field(min_length=1)
@@ -291,6 +434,7 @@ class CandidateDiscoveryService:
                 market=member.market,
                 score=0,
                 ticker=member.ticker,
+                company_name=member.company_name,
                 sector=member.sector,
                 verdict=DiscoveryVerdict.EXCLUDE,
                 reasons=[reason],
@@ -310,6 +454,7 @@ class CandidateDiscoveryService:
             market=member.market,
             score=score,
             ticker=member.ticker,
+            company_name=member.company_name,
             sector=member.sector,
             verdict=verdict,
             reasons=reasons,
@@ -325,6 +470,7 @@ class CandidateDiscoveryService:
             market=member.market,
             score=0,
             ticker=member.ticker,
+            company_name=member.company_name,
             sector=member.sector,
             verdict=DiscoveryVerdict.EXCLUDE,
             reasons=[f"시장 가격 데이터 조회 실패로 제외했습니다. {detail}"],

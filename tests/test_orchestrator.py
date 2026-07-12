@@ -416,6 +416,7 @@ async def test_create_korean_analysis_persists_market_identity_without_schema_ch
     candidate = storage.get_candidate(run.candidate_id)
     assert candidate is not None
     assert candidate.ticker == "KR-005930"
+    assert candidate.company_name == "삼성전자"
     assert candidate.attributes == {
         "market": "kr",
         "local_symbol": "005930",
@@ -426,8 +427,13 @@ async def test_create_korean_analysis_persists_market_identity_without_schema_ch
     assert run.configuration["market"] == "kr"
     payload = committee.build_run_payload(run.id)
     assert payload["ticker"] == "005930"
+    assert payload["company_name"] == "삼성전자"
     assert payload["market"] == "kr"
     assert payload["canonical_id"] == "kr:005930"
+
+    candidate.company_name = None
+    storage.save_candidate(candidate)
+    assert committee.build_run_payload(run.id)["company_name"] == "삼성전자"
 
 
 @pytest.mark.asyncio

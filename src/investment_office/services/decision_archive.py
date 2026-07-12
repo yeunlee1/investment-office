@@ -17,6 +17,8 @@ from investment_office.domain import (
     Snapshot,
     SnapshotKind,
 )
+from investment_office.services.candidate_discovery import find_universe_company_name
+from investment_office.services.instrument_identity import resolve_stored_instrument
 from investment_office.storage import Storage
 
 SCHEDULE_RECORD_TYPE = "scheduled_analysis"
@@ -130,11 +132,16 @@ class DecisionArchiveService:
         reviews = self.storage.list_human_reviews(run.id)
         latest_review = reviews[0] if reviews else None
         scheduled_analysis = self._latest_schedule(run.id)
+        instrument = resolve_stored_instrument(candidate.ticker, candidate.attributes)
+        company_name = candidate.company_name or find_universe_company_name(
+            instrument.market,
+            instrument.symbol,
+        )
         return DecisionArchiveEntry(
             run_id=run.id,
             candidate_id=candidate.id,
             ticker=candidate.ticker,
-            company_name=candidate.company_name,
+            company_name=company_name,
             thesis=candidate.thesis,
             candidate_status=candidate.status,
             run_status=run.status,

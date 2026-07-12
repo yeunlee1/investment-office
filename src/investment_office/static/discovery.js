@@ -6,6 +6,7 @@ import {
   asArray,
   asObject,
   clearElement,
+  classifyDiscoveryOutcome,
   compactText,
   createElement,
   formatDateTime,
@@ -13,13 +14,16 @@ import {
   requestJson,
   runProgress,
   safeSourceUrl,
+  setButtonBusy,
   setFeedback,
   setText,
+  startSiteOperation,
   statusInfo,
-} from "./site-common.js?v=1";
+} from "./site-common.js?v=4";
 
 const elements = {
   screenForm: document.querySelector("#discovery-screen-form"),
+  screenButton: document.querySelector('#discovery-screen-form button[type="submit"]'),
   market: document.querySelector("#discovery-market"),
   strategy: document.querySelector("#discovery-strategy"),
   feedback: document.querySelector("#discovery-feedback"),
@@ -138,10 +142,13 @@ function renderDiscovery(discovery) {
   setText(elements.qualified, discovery?.qualified_count, "—");
   setText(elements.shortlist, candidates.length, "0");
   renderCandidates(candidates);
-  setStage("scan", "done", `${discovery?.evaluated_count ?? discovery?.universe_size ?? 0} / ${discovery?.universe_size ?? 30}`);
-  setStage("shortlist", candidates.length ? "done" : "error", `${candidates.length}개`);
-  setStage("agents", "idle", candidates.length ? "선택 대기" : "후보 없음");
+  const universeSize = Number(discovery?.universe_size || 0);
+  const evaluatedCount = Number(discovery?.evaluated_count || 0);
+  setStage("scan", evaluatedCount > 0 ? "done" : "error", `${evaluatedCount} / ${universeSize || 30}`);
+  setStage("shortlist", evaluatedCount > 0 ? "done" : "error", evaluatedCount > 0 ? `${candidates.length}개` : "평가 불가");
+  setStage("agents", "idle", candidates.length ? "선택 대기" : evaluatedCount > 0 ? "후보 없음" : "스캔 실패");
   setStage("review", "idle", "분석 대기");
+  return classifyDiscoveryOutcome(discovery);
 }
 
 function latestBatchRuns() {
@@ -255,6 +262,7 @@ async function loadRuns() {
     schedulePolling();
   } catch (error) {
     setFeedback(elements.runFeedback, `추천 분석 이력 조회 실패. ${error.message}`, "error");
+    if (state.runs.some((run) => ACTIVE.has(run.status))) schedulePolling(5_000);
   }
 }
 
@@ -266,7 +274,13 @@ async function submitScreen(event) {
   updateSelection();
   const market = elements.market?.value === "kr" ? "kr" : "us";
   const strategy = elements.strategy?.value || "balanced";
-  setFeedback(elements.feedback, `${marketLabel(market)} 대표주 30종목의 완료 일봉을 비교하고 있습니다.`);
+  const operation = startSiteOperation({
+    key: "discovery-screen",
+    title: `${marketLabel(market)} 추천 후보 스캔`,
+    detail: "대표주 30종목의 가격 데이터를 요청하고 완료 일봉과 정량 점수를 비교하고 있습니다.",
+  });
+  setButtonBusy(elements.screenButton, true, "30종목 조회 중");
+  setFeedback(elements.feedback, `${marketLabel(market)} 대표주 30종목의 가격 데이터를 불러와 완료 일봉을 비교하고 있습니다.`);
   setStage("scan", "active", "조회 중");
   setStage("shortlist", "idle", "대기");
   try {
@@ -274,20 +288,32 @@ async function submitScreen(event) {
       method: "POST",
       body: JSON.stringify({ market, strategy, limit: 8 }),
     }, 120_000);
-    renderDiscovery(asObject(payload.discovery));
-    setFeedback(elements.feedback, `${asArray(payload.discovery?.candidates).length}개 후보를 선별했습니다. 매수 보장이 아닌 심층검토 대상입니다.`, "success");
+    const outcome = renderDiscovery(asObject(payload.discovery));
+    if (outcome.state === "failed") {
+      setFeedback(elements.feedback, `후보 스캔 실패. ${outcome.message}`, "error");
+      operation.fail(outcome.message);
+    } else if (outcome.state === "warning") {
+      setFeedback(elements.feedback, `후보 스캔 일부 완료. ${outcome.message}`, "warning");
+      operation.warn(outcome.message);
+    } else {
+      setFeedback(elements.feedback, outcome.message, "success");
+      operation.succeed(outcome.message);
+    }
   } catch (error) {
     setStage("scan", "error", "실패");
     setStage("shortlist", "error", "중단");
     setFeedback(elements.feedback, `후보 선별 실패. ${error.message}`, "error");
+    operation.fail(`후보 선별 요청이 실패했습니다. ${error.message}`);
   } finally {
     state.loading = false;
+    setButtonBusy(elements.screenButton, false);
     setFormDisabled(elements.screenForm, false);
     updateSelection();
   }
 }
 
 function setFormDisabled(form, disabled) {
+  form?.setAttribute("aria-busy", String(disabled));
   form?.querySelectorAll("input, select, button").forEach((control) => { control.disabled = disabled; });
 }
 
@@ -300,7 +326,13 @@ async function submitAnalysis(event) {
     return;
   }
   state.loading = true;
+  elements.analyzeForm?.setAttribute("aria-busy", "true");
+  const operation = startSiteOperation({
+    title: `${tickers.join(", ")} 심층 분석`,
+    detail: "선택 종목을 투자팀에 배정하고 분석 실행 번호를 만들고 있습니다.",
+  });
   if (elements.analyzeButton) elements.analyzeButton.disabled = true;
+  setButtonBusy(elements.analyzeButton, true, "투자팀 배정 중");
   elements.candidateList?.querySelectorAll("input").forEach((input) => { input.disabled = true; });
   setStage("agents", "active", "배정 중");
   setFeedback(elements.feedback, `${tickers.join(", ")} 심층분석을 여섯 에이전트에게 배정하고 있습니다.`);
@@ -312,13 +344,19 @@ async function submitAnalysis(event) {
     }, 45_000);
     const created = asArray(payload.runs);
     state.latestBatchId = created[0]?.discovery_batch_id || null;
-    setFeedback(elements.feedback, `${created.length}개 종목의 심층분석을 시작했습니다. 자동 주문은 생성되지 않습니다.`, "success");
+    const runIds = created.map((run) => run.run_id).filter(Boolean);
+    if (!runIds.length) throw new Error("분석 실행 번호가 생성되지 않았습니다.");
+    operation.trackRuns(runIds, `${created.length}개 종목을 접수했습니다. 에이전트 분석 진행을 실시간으로 추적합니다.`);
+    setFeedback(elements.feedback, `${created.length}개 종목을 접수했습니다. 아래 실행 카드에서 에이전트 진행 상태를 확인하세요. 자동 주문은 생성되지 않습니다.`);
     await loadRuns();
   } catch (error) {
     setStage("agents", "error", "배정 실패");
     setFeedback(elements.feedback, `심층분석 시작 실패. ${error.message}`, "error");
+    operation.fail(`심층분석을 시작하지 못했습니다. ${error.message}`);
   } finally {
     state.loading = false;
+    elements.analyzeForm?.setAttribute("aria-busy", "false");
+    setButtonBusy(elements.analyzeButton, false);
     elements.candidateList?.querySelectorAll("input").forEach((input) => { input.disabled = false; });
     updateSelection();
   }

@@ -70,5 +70,7 @@
   "68": "datetime",
   "69": "submitDiscoveryScreen",
   "70": "Self",
-  "71": "build_codex_child_environment"
+  "71": "build_codex_child_environment",
+  "73": "renderAgentTasks",
+  "75": "test_site_feedback_runtime.py"
 }

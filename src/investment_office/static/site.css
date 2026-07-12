@@ -388,11 +388,310 @@ a:focus-visible,
   color: #ff9188;
 }
 
+/* 사용자가 지시한 작업과 서버 진행 이벤트를 전 페이지에서 추적한다. */
+.operation-monitor {
+  position: sticky;
+  z-index: 19;
+  top: 0;
+  border-bottom: 1px solid var(--line-dark);
+  background:
+    linear-gradient(90deg, rgba(21, 125, 120, 0.07), transparent 34%),
+    var(--paper-strong);
+  box-shadow: 0 9px 20px rgba(23, 33, 29, 0.12);
+}
+
+.operation-monitor__current {
+  display: grid;
+  width: min(100%, var(--content-max));
+  min-height: 76px;
+  margin: 0 auto;
+  padding: 10px var(--page-pad);
+  align-items: center;
+  grid-template-columns: auto minmax(260px, 1.3fr) minmax(250px, 0.8fr) auto;
+  gap: 14px;
+}
+
+.operation-monitor__signal {
+  position: relative;
+  display: block;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--line-dark);
+  background: var(--paper-muted);
+  box-shadow: 3px 3px 0 rgba(23, 33, 29, 0.18);
+}
+
+.operation-monitor__signal::after {
+  position: absolute;
+  inset: 4px;
+  background: var(--line-strong);
+  content: "";
+}
+
+.operation-monitor[data-state="running"] .operation-monitor__signal::after {
+  background: var(--cyan);
+  animation: operation-pulse 1.1s ease-in-out infinite;
+}
+
+.operation-monitor[data-state="success"] .operation-monitor__signal::after {
+  background: var(--signal);
+}
+
+.operation-monitor[data-state="warning"] .operation-monitor__signal::after {
+  background: var(--hazard);
+}
+
+.operation-monitor[data-state="failed"] .operation-monitor__signal::after {
+  background: var(--fault);
+}
+
+.operation-monitor__summary {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.operation-monitor__eyebrow {
+  color: var(--cyan);
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+}
+
+.operation-monitor__summary strong {
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operation-monitor__summary > span:last-child {
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operation-monitor__server {
+  display: grid;
+  min-width: 0;
+  min-height: 42px;
+  padding-left: 14px;
+  align-content: center;
+  gap: 2px;
+  border-left: 1px solid var(--line);
+}
+
+.operation-monitor__server > span {
+  color: var(--ink-faint);
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+}
+
+.operation-monitor__server strong {
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operation-monitor__server strong[data-state="failed"] {
+  color: var(--fault);
+}
+
+.operation-monitor__meta {
+  display: grid;
+  min-width: 152px;
+  justify-items: end;
+  grid-template-columns: auto auto;
+  gap: 4px 10px;
+}
+
+.operation-monitor__status {
+  color: var(--ink-faint);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.operation-monitor[data-state="running"] .operation-monitor__status {
+  color: var(--cyan);
+}
+
+.operation-monitor[data-state="success"] .operation-monitor__status {
+  color: var(--signal);
+}
+
+.operation-monitor[data-state="warning"] .operation-monitor__status {
+  color: #7c5907;
+}
+
+.operation-monitor[data-state="failed"] .operation-monitor__status {
+  color: var(--fault);
+}
+
+.operation-monitor__meta time {
+  color: var(--ink-faint);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.operation-monitor__toggle {
+  display: inline-flex;
+  min-height: 30px;
+  padding: 4px 7px 4px 9px;
+  align-items: center;
+  grid-column: 1 / -1;
+  gap: 7px;
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.operation-monitor__toggle:hover {
+  background: var(--cyan-pale);
+}
+
+.operation-monitor__toggle span {
+  display: grid;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  place-items: center;
+  background: var(--ink);
+  color: var(--paper-strong);
+  font-size: 9px;
+}
+
+.operation-monitor__history {
+  border-top: 1px solid var(--line);
+  background: var(--paper-muted);
+}
+
+.operation-monitor__history ol {
+  display: grid;
+  width: min(100%, var(--content-max));
+  max-height: min(42vh, 330px);
+  margin: 0 auto;
+  padding: 0 var(--page-pad);
+  overflow-y: auto;
+  list-style: none;
+}
+
+.operation-monitor__item {
+  display: grid;
+  min-width: 0;
+  padding: 10px 0;
+  align-items: center;
+  grid-template-columns: 84px minmax(0, 1fr) auto;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.operation-monitor__item-status {
+  color: var(--ink-faint);
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.operation-monitor__item[data-state="success"] .operation-monitor__item-status {
+  color: var(--signal);
+}
+
+.operation-monitor__item[data-state="warning"] .operation-monitor__item-status {
+  color: #7c5907;
+}
+
+.operation-monitor__item[data-state="failed"] .operation-monitor__item-status {
+  color: var(--fault);
+}
+
+.operation-monitor__item-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.operation-monitor__item-copy strong,
+.operation-monitor__item-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operation-monitor__item-copy strong {
+  font-size: 12px;
+}
+
+.operation-monitor__item-copy small {
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+
+.operation-monitor__item > time {
+  color: var(--ink-faint);
+  font-size: 9px;
+}
+
+.operation-monitor__empty {
+  padding: 14px 0;
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
+.operation-monitor__progress {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 3px;
+  overflow: hidden;
+  background: transparent;
+}
+
+.operation-monitor__progress span {
+  display: block;
+  width: 36%;
+  height: 100%;
+  background: var(--cyan);
+  opacity: 0;
+  transform: translateX(-110%);
+}
+
+.operation-monitor[data-state="running"] .operation-monitor__progress span {
+  opacity: 1;
+  animation: operation-sweep 1.4s var(--ease) infinite;
+}
+
+@keyframes operation-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes operation-sweep {
+  to {
+    transform: translateX(390%);
+  }
+}
+
 /* 공통 페이지 골격 */
 .site-main {
   width: min(100%, var(--content-max));
   margin: 0 auto;
   padding: 30px var(--page-pad) 72px;
+  scroll-margin-top: 92px;
 }
 
 .site-footer {
@@ -687,6 +986,29 @@ a:focus-visible,
   opacity: 0.48;
 }
 
+.button.is-busy,
+button.is-busy {
+  position: relative;
+}
+
+.button.is-busy::before,
+button.is-busy::before {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  content: "";
+  animation: operation-spin 0.8s linear infinite;
+}
+
+@keyframes operation-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .button--wide {
   width: 100%;
   justify-content: space-between;
@@ -876,6 +1198,11 @@ a:focus-visible,
 .form-feedback[data-tone="success"],
 .form-feedback.is-success {
   color: var(--signal);
+  font-weight: 750;
+}
+
+.form-feedback[data-tone="warning"] {
+  color: #7c5907;
   font-weight: 750;
 }
 
@@ -1145,6 +1472,12 @@ button.history-item {
 .history-item.is-selected {
   border-left-color: var(--cyan);
   background: var(--cyan-pale);
+}
+
+.history-card[aria-busy="true"] {
+  cursor: progress;
+  outline: 2px solid var(--cyan);
+  outline-offset: -2px;
 }
 
 .data-card__header,
@@ -3201,6 +3534,18 @@ button.history-item {
 }
 
 @media (max-width: 1020px) {
+  .operation-monitor__current {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .operation-monitor__server {
+    min-height: auto;
+    padding: 7px 0 0;
+    grid-column: 2 / -1;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
   .site-header__primary {
     display: grid;
     padding-top: 14px;
@@ -3573,6 +3918,62 @@ button.history-item {
 }
 
 @media (max-width: 500px) {
+  .site-main {
+    scroll-margin-top: 190px;
+  }
+
+  .operation-monitor__current {
+    min-height: 0;
+    padding-top: 9px;
+    padding-bottom: 9px;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 8px 10px;
+  }
+
+  .operation-monitor__summary strong {
+    font-size: 16px;
+  }
+
+  .operation-monitor__summary > span:last-child {
+    display: -webkit-box;
+    max-height: 4.35em;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    line-height: 1.45;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+  }
+
+  .operation-monitor__server,
+  .operation-monitor__meta {
+    grid-column: 1 / -1;
+  }
+
+  .operation-monitor__server {
+    padding-top: 6px;
+  }
+
+  .operation-monitor__meta {
+    min-width: 0;
+    align-items: center;
+    justify-items: start;
+    grid-template-columns: auto auto 1fr;
+  }
+
+  .operation-monitor__toggle {
+    justify-self: end;
+    grid-column: auto;
+  }
+
+  .operation-monitor__item {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  .operation-monitor__item > time {
+    display: none;
+  }
+
   .site-brand__copy small {
     display: none;
   }
@@ -3757,6 +4158,11 @@ button.history-item {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+
+  .operation-monitor[data-state="running"] .operation-monitor__progress span {
+    width: 100%;
+    transform: none;
+  }
 }
 
 @media (forced-colors: active) {
@@ -3766,6 +4172,7 @@ button.history-item {
   .workflow-card,
   .page-heading,
   .page-hero,
+  .operation-monitor,
   .button,
   .status-badge {
     border: 1px solid CanvasText;
@@ -3773,6 +4180,7 @@ button.history-item {
   }
 
   .signal-pulse,
+  .operation-monitor__signal,
   .agent-chip::before {
     border: 1px solid CanvasText;
   }

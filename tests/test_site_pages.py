@@ -13,6 +13,7 @@ HISTORY = (TEMPLATES / "history.html").read_text(encoding="utf-8")
 ANALYSIS_SCRIPT = (STATIC / "analysis.js").read_text(encoding="utf-8")
 MARKETS_SCRIPT = (STATIC / "markets.js").read_text(encoding="utf-8")
 HISTORY_SCRIPT = (STATIC / "history.js").read_text(encoding="utf-8")
+DISCOVERY_SCRIPT = (STATIC / "discovery.js").read_text(encoding="utf-8")
 COMMON_SCRIPT = (STATIC / "site-common.js").read_text(encoding="utf-8")
 STYLES = (STATIC / "site.css").read_text(encoding="utf-8")
 
@@ -31,7 +32,7 @@ def test_site_uses_summary_hub_and_four_clear_pages() -> None:
         "hub-recent-runs",
     ):
         assert f'id="{field_id}"' in HUB
-    assert 'src="/static/hub.js?v=1"' in HUB
+    assert 'src="/static/hub.js?v=4"' in HUB
 
 
 def test_individual_page_exposes_all_site_operations() -> None:
@@ -63,7 +64,7 @@ def test_individual_page_exposes_all_site_operations() -> None:
     assert 'setAttribute("aria-valuenow"' in ANALYSIS_SCRIPT
     assert 'type="submit" data-review-decision=' not in ANALYSIS
     assert ANALYSIS.count('type="button" data-review-decision=') == 3
-    assert 'src="/static/analysis.js?v=1"' in ANALYSIS
+    assert 'src="/static/analysis.js?v=4"' in ANALYSIS
     assert "{ market, ticker, thesis }" in ANALYSIS_SCRIPT
     assert "{ market, ticker, scheduled_for:" in ANALYSIS_SCRIPT
 
@@ -87,7 +88,7 @@ def test_individual_page_connects_every_existing_operation_api() -> None:
     assert "Object.keys(result).length ? result : progress" in ANALYSIS_SCRIPT
     assert "preventScroll: true" in ANALYSIS_SCRIPT
     assert '.catch(() => ({ tasks: [] }))' not in ANALYSIS_SCRIPT
-    assert 'eventType === "schedule"' in ANALYSIS_SCRIPT
+    assert '["schedule", "scheduled_analysis"].includes(eventType)' in ANALYSIS_SCRIPT
     assert "state.committee?.session_id !== sessionId" in ANALYSIS_SCRIPT
 
 
@@ -102,7 +103,7 @@ def test_history_page_filters_and_lazily_loads_saved_detail() -> None:
         "history-detail",
     ):
         assert f'id="{field_id}"' in HISTORY
-    assert 'src="/static/history.js?v=1"' in HISTORY
+    assert 'src="/static/history.js?v=4"' in HISTORY
     assert "`${API.runs}?limit=200`" in HISTORY_SCRIPT
     for contract in (
         "API.run(runId)",
@@ -172,5 +173,43 @@ def test_market_control_room_exposes_cross_market_quality_contract() -> None:
     assert "requestJson(API.dataSources)" in MARKETS_SCRIPT
     assert 'Promise.allSettled' in MARKETS_SCRIPT
     assert 'quality?.macro_eligible === true' in MARKETS_SCRIPT
-    assert 'src="/static/markets.js?v=1"' in MARKETS
+    assert 'src="/static/markets.js?v=4"' in MARKETS
     assert 'href="/static/markets.css?v=3"' in MARKETS
+
+
+def test_all_site_actions_publish_visible_operation_feedback() -> None:
+    for field_id in (
+        "site-operation-monitor",
+        "site-operation-title",
+        "site-operation-detail",
+        "site-operation-event",
+        "site-operation-status",
+        "site-operation-elapsed",
+        "site-operation-toggle",
+        "site-operation-history",
+        "site-operation-list",
+    ):
+        assert f'id="{field_id}"' in BASE
+    assert 'aria-busy="false"' in BASE
+    assert 'aria-live="polite"' in BASE
+    assert 'export function startSiteOperation' in COMMON_SCRIPT
+    assert 'export function setButtonBusy' in COMMON_SCRIPT
+    assert 'Field required$/i.test(message)' in COMMON_SCRIPT
+    assert '서버 내부 오류가 발생했습니다. 서버 로그를 확인하세요.' in COMMON_SCRIPT
+    assert 'handleOperationEvent(payload, event.type)' in COMMON_SCRIPT
+    assert '"scheduled_analysis"' in COMMON_SCRIPT
+    assert 'source.addEventListener("open"' in COMMON_SCRIPT
+    assert "restoreActiveScheduledOperations(attempt + 1)" in COMMON_SCRIPT
+    assert (
+        'trackTasks(tasks, detail = "담당 에이전트가 업무를 실행하고 있습니다.")'
+        in COMMON_SCRIPT
+    )
+    assert 'window.sessionStorage.setItem(OPERATION_STORAGE_KEY' in COMMON_SCRIPT
+    assert ANALYSIS_SCRIPT.count("startSiteOperation({") >= 9
+    assert DISCOVERY_SCRIPT.count("startSiteOperation({") >= 2
+    assert MARKETS_SCRIPT.count("startSiteOperation({") >= 1
+    assert HISTORY_SCRIPT.count("startSiteOperation({") >= 2
+    assert 'classifyDiscoveryOutcome' in DISCOVERY_SCRIPT
+    assert 'evaluatedCount === 0' in COMMON_SCRIPT
+    assert '실제 평가는 0건입니다' in COMMON_SCRIPT
+    assert '.operation-monitor[data-state="running"]' in STYLES

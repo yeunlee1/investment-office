@@ -194,7 +194,7 @@ async def test_data_shortage_and_lookup_failure_are_excluded_without_failing_scr
     assert "신규 상장 또는 짧은 거래 이력" in excluded["NEW"].reasons[0]
     assert "관측 20개" in excluded["NEW"].reasons[0]
     assert excluded["NEW"].source_url is not None
-    assert "Yahoo Finance 조회 실패" in excluded["FAIL"].reasons[0]
+    assert "시장 가격 데이터 조회 실패" in excluded["FAIL"].reasons[0]
     assert "HTTP 429" in excluded["FAIL"].reasons[0]
     assert excluded["FAIL"].source_url is None
     assert result.evaluated_count == 1

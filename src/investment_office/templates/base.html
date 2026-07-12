@@ -10,7 +10,7 @@
       content="종목 분석, 후보 추천, AI 투자위원회와 사람의 최종 검토를 한곳에서 운영하는 Signal Foundry 로컬 리서치 콘솔"
     />
     <title>{% block title %}Signal Foundry{% endblock %}</title>
-    <link rel="stylesheet" href="/static/site.css?v=1" />
+    <link rel="stylesheet" href="/static/site.css?v=4" />
     {% block head %}{% endblock %}
   </head>
   <body class="{% block body_class %}{% endblock %}">
@@ -96,6 +96,47 @@
         </dl>
       </div>
     </header>
+
+    <section
+      id="site-operation-monitor"
+      class="operation-monitor"
+      data-state="idle"
+      aria-label="현재 작업 모니터"
+      aria-busy="false"
+    >
+      <div class="operation-monitor__current">
+        <span class="operation-monitor__signal" aria-hidden="true"></span>
+        <div class="operation-monitor__summary" aria-live="polite" aria-atomic="true">
+          <span class="operation-monitor__eyebrow mono">WORK TRACE</span>
+          <strong id="site-operation-title">명령 대기</strong>
+          <span id="site-operation-detail">작업을 요청하면 현재 단계와 결과가 여기에 표시됩니다.</span>
+        </div>
+        <div class="operation-monitor__server" aria-label="최근 서버 진행 이벤트">
+          <span class="mono">SERVER FEED</span>
+          <strong id="site-operation-event">새 이벤트 대기</strong>
+        </div>
+        <div class="operation-monitor__meta">
+          <span id="site-operation-status" class="operation-monitor__status mono">대기</span>
+          <time id="site-operation-elapsed" class="mono" datetime="">--</time>
+          <button
+            id="site-operation-toggle"
+            class="operation-monitor__toggle"
+            type="button"
+            aria-expanded="false"
+            aria-controls="site-operation-history"
+          >
+            최근 기록
+            <span id="site-operation-count" class="mono">0</span>
+          </button>
+        </div>
+      </div>
+      <div id="site-operation-history" class="operation-monitor__history" hidden>
+        <ol id="site-operation-list" aria-label="최근 작업 결과">
+          <li class="operation-monitor__empty">아직 기록된 작업이 없습니다.</li>
+        </ol>
+      </div>
+      <div class="operation-monitor__progress" aria-hidden="true"><span></span></div>
+    </section>
 
     <main id="main-content" class="site-main">
       {% block content %}{% endblock %}

@@ -18,13 +18,16 @@ import {
   roleLabel,
   runProgress,
   safeSourceUrl,
+  setButtonBusy,
   setFeedback,
   setText,
+  startSiteOperation,
   statusInfo,
-} from "./site-common.js?v=1";
+} from "./site-common.js?v=4";
 
 const elements = {
   analysisForm: document.querySelector("#individual-analysis-form"),
+  analysisButton: document.querySelector('#individual-analysis-form button[type="submit"]'),
   market: document.querySelector("#individual-market"),
   ticker: document.querySelector("#individual-ticker"),
   tickerSymbol: document.querySelector("#individual-ticker-symbol"),
@@ -32,6 +35,7 @@ const elements = {
   thesis: document.querySelector("#individual-thesis"),
   analysisFeedback: document.querySelector("#individual-feedback"),
   scheduleForm: document.querySelector("#schedule-form"),
+  scheduleButton: document.querySelector('#schedule-form button[type="submit"]'),
   scheduleMarket: document.querySelector("#schedule-market"),
   scheduleTicker: document.querySelector("#schedule-ticker"),
   scheduleTickerSymbol: document.querySelector("#schedule-ticker-symbol"),
@@ -55,12 +59,14 @@ const elements = {
   tabs: Array.from(document.querySelectorAll("[data-workbench-tab]")),
   panels: Array.from(document.querySelectorAll("[role='tabpanel'][id^='workbench-']")),
   taskForm: document.querySelector("#task-form"),
+  taskButton: document.querySelector('#task-form button[type="submit"]'),
   taskRole: document.querySelector("#task-role"),
   taskTitle: document.querySelector("#task-title"),
   taskInstructions: document.querySelector("#task-instructions"),
   taskFeedback: document.querySelector("#task-feedback"),
   taskList: document.querySelector("#task-list"),
   committeeStartForm: document.querySelector("#committee-start-form"),
+  committeeStartButton: document.querySelector('#committee-start-form button[type="submit"]'),
   committeeTopic: document.querySelector("#committee-topic"),
   committeeMaxTurns: document.querySelector("#committee-max-turns"),
   committeeFeedback: document.querySelector("#committee-feedback"),
@@ -99,6 +105,10 @@ const state = {
   committeeTimer: null,
   listRefreshTimer: null,
   scheduleRefreshPending: false,
+  taskSubmitting: false,
+  committeeStarting: false,
+  committeeCommandSubmitting: false,
+  reviewSubmitting: false,
 };
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "scheduled", "claimed", "dispatched", "running"]);
@@ -263,6 +273,7 @@ async function selectRun(runId, { updateUrl = true } = {}) {
   } catch (error) {
     if (token !== state.selectionToken) return;
     setFeedback(elements.runFeedback, `실행 상세 조회 실패. ${error.message}`, "error");
+    if (ACTIVE_RUN_STATUSES.has(state.run?.status)) scheduleRunPolling(5_000);
   }
 }
 
@@ -359,7 +370,7 @@ function renderAgents(agents) {
 
 function renderTasks(tasks) {
   clearElement(elements.taskList);
-  setFormDisabled(elements.taskForm, !state.currentRunId);
+  setFormDisabled(elements.taskForm, !state.currentRunId || state.taskSubmitting);
   const values = asArray(tasks);
   if (!values.length) {
     elements.taskList?.append(createElement("li", "empty-state", "이 실행에 별도 업무가 없습니다."));
@@ -414,10 +425,10 @@ function renderCommittee(committee) {
   clearElement(elements.committeeMinutes);
   state.committee = committee || null;
   const active = ACTIVE_COMMITTEE_STATUSES.has(committee?.status);
-  setFormDisabled(elements.committeeStartForm, !state.currentRunId || active);
-  setFormDisabled(elements.committeeCommandForm, !active);
-  if (elements.committeeFinish) elements.committeeFinish.disabled = !active;
-  if (elements.committeeStop) elements.committeeStop.disabled = !active;
+  setFormDisabled(elements.committeeStartForm, !state.currentRunId || active || state.committeeStarting);
+  setFormDisabled(elements.committeeCommandForm, !active || state.committeeCommandSubmitting);
+  if (elements.committeeFinish) elements.committeeFinish.disabled = !active || state.committeeCommandSubmitting;
+  if (elements.committeeStop) elements.committeeStop.disabled = !active || state.committeeCommandSubmitting;
 
   if (!committee) {
     setText(elements.committeeStatus, "소집 전");
@@ -511,7 +522,7 @@ function renderDecision(run) {
   renderTextList(elements.decisionRisks, decision.risks, "위험 신호 대기 중입니다.");
 
   const reviewable = run?.status === "review" && !Object.keys(review).length;
-  setFormDisabled(elements.reviewForm, !reviewable);
+  setFormDisabled(elements.reviewForm, !reviewable || state.reviewSubmitting);
   if (Object.keys(review).length) {
     setFeedback(elements.reviewFeedback, `${statusInfo(run.status).label} 결정이 기록되었습니다. ${review.reason || ""}`, "success");
   } else if (reviewable) {
@@ -564,15 +575,38 @@ async function refreshCommittee() {
     if (ACTIVE_COMMITTEE_STATUSES.has(payload.committee?.status)) scheduleCommitteePolling();
   } catch (error) {
     setFeedback(elements.committeeFeedback, `회의 갱신 실패. ${error.message}`, "error");
+    if (state.currentRunId === runId && state.committee?.session_id === sessionId) {
+      scheduleCommitteePolling(4_000);
+    }
   }
 }
 
-async function loadSchedules() {
+async function loadSchedules({ userInitiated = false } = {}) {
+  const operation = userInitiated
+    ? startSiteOperation({
+      key: "schedule-refresh",
+      title: "예약 목록 새로고침",
+      detail: "서버에 저장된 최신 예약 상태를 불러오고 있습니다.",
+    })
+    : null;
+  if (userInitiated) {
+    setButtonBusy(elements.scheduleRefresh, true, "새로고침 중");
+    setFeedback(elements.scheduleFeedback, "최신 예약 상태를 불러오고 있습니다.");
+  }
   try {
     const payload = await requestJson(API.schedules);
     renderSchedules(payload.schedules);
+    if (operation) {
+      const count = asArray(payload.schedules).length;
+      const message = `예약 ${count}건을 최신 상태로 갱신했습니다.`;
+      setFeedback(elements.scheduleFeedback, message, "success");
+      operation.succeed(message);
+    }
   } catch (error) {
     setFeedback(elements.scheduleFeedback, `예약 목록 조회 실패. ${error.message}`, "error");
+    operation?.fail(`예약 목록을 불러오지 못했습니다. ${error.message}`);
+  } finally {
+    if (userInitiated) setButtonBusy(elements.scheduleRefresh, false);
   }
 }
 
@@ -619,7 +653,13 @@ async function submitAnalysis(event) {
     elements.ticker?.focus();
     return;
   }
+  const operation = startSiteOperation({
+    title: `${ticker} 개별 종목 분석`,
+    detail: "분석 실행을 만들고 가격·거시·기업 자료 수집을 준비하고 있습니다.",
+  });
+  elements.analysisForm?.setAttribute("aria-busy", "true");
   setFormDisabled(elements.analysisForm, true);
+  setButtonBusy(elements.analysisButton, true, "분석 배정 중");
   setFeedback(elements.analysisFeedback, `${ticker} 분석을 투자팀에 배정하고 있습니다.`);
   try {
     const payload = await requestJson(API.analyze, {
@@ -627,12 +667,18 @@ async function submitAnalysis(event) {
       body: JSON.stringify(thesis ? { market, ticker, thesis } : { market, ticker }),
     }, 45_000);
     const run = payload.run || {};
-    setFeedback(elements.analysisFeedback, `${ticker} 분석이 시작되었습니다.`, "success");
+    const runId = run.run_id || payload.run_id;
+    if (!runId) throw new Error("분석 실행 번호가 생성되지 않았습니다.");
+    operation.trackRuns([runId], `${ticker} 분석을 접수했습니다. 자료 수집과 에이전트 판단을 실시간으로 추적합니다.`);
+    setFeedback(elements.analysisFeedback, `${ticker} 분석을 접수했습니다. 아래 진행 카드에서 현재 단계를 확인하세요.`);
     await loadRunList({ preserveSelection: true });
-    await selectRun(run.run_id || payload.run_id);
+    await selectRun(runId);
   } catch (error) {
     setFeedback(elements.analysisFeedback, `분석 시작 실패. ${error.message}`, "error");
+    operation.fail(`${ticker} 분석을 시작하지 못했습니다. ${error.message}`);
   } finally {
+    elements.analysisForm?.setAttribute("aria-busy", "false");
+    setButtonBusy(elements.analysisButton, false);
     setFormDisabled(elements.analysisForm, false);
   }
 }
@@ -648,25 +694,41 @@ async function submitSchedule(event) {
     setFeedback(elements.scheduleFeedback, "종목 코드와 미래 예약 시각을 확인하세요.", "error");
     return;
   }
+  const operation = startSiteOperation({
+    key: "schedule-create",
+    title: `${ticker} 분석 예약 등록`,
+    detail: "예약 시각과 종목을 검증하고 서버 예약 대기열에 등록하고 있습니다.",
+  });
+  elements.scheduleForm?.setAttribute("aria-busy", "true");
   setFormDisabled(elements.scheduleForm, true);
+  setButtonBusy(elements.scheduleButton, true, "예약 등록 중");
   setFeedback(elements.scheduleFeedback, `${ticker} 일회성 분석 예약을 등록하고 있습니다.`);
   try {
     const body = { market, ticker, scheduled_for: scheduledDate.toISOString() };
     if (thesis) body.thesis = thesis;
     const payload = await requestJson(API.schedules, { method: "POST", body: JSON.stringify(body) });
-    setFeedback(elements.scheduleFeedback, `${ticker} 예약을 등록했습니다.`, "success");
+    const message = payload.deduplicated
+      ? `${ticker}에 동일한 예약이 이미 있어 기존 예약을 유지했습니다.`
+      : `${ticker} 예약을 등록했습니다.`;
+    setFeedback(elements.scheduleFeedback, message, payload.deduplicated ? "warning" : "success");
+    if (payload.deduplicated) operation.warn(message);
+    else operation.succeed(message);
     await Promise.all([loadSchedules(), loadRunList({ preserveSelection: true })]);
     if (payload.run?.run_id) await selectRun(payload.run.run_id);
   } catch (error) {
     setFeedback(elements.scheduleFeedback, `예약 등록 실패. ${error.message}`, "error");
+    operation.fail(`${ticker} 예약을 등록하지 못했습니다. ${error.message}`);
   } finally {
+    elements.scheduleForm?.setAttribute("aria-busy", "false");
+    setButtonBusy(elements.scheduleButton, false);
     setFormDisabled(elements.scheduleForm, false);
   }
 }
 
 async function submitTask(event) {
   event.preventDefault();
-  if (!state.currentRunId) return;
+  if (!state.currentRunId || state.taskSubmitting) return;
+  const targetRunId = state.currentRunId;
   const body = {
     role: elements.taskRole?.value,
     title: String(elements.taskTitle?.value || "").trim(),
@@ -676,17 +738,37 @@ async function submitTask(event) {
     setFeedback(elements.taskFeedback, "역할, 제목, 업무 지시를 모두 입력하세요.", "error");
     return;
   }
+  const operation = startSiteOperation({
+    title: `${roleLabel(body.role)} 업무 배정`,
+    detail: "업무 지시를 저장하고 담당 에이전트의 실행 대기열에 넣고 있습니다.",
+  });
+  state.taskSubmitting = true;
+  elements.taskForm?.setAttribute("aria-busy", "true");
   setFormDisabled(elements.taskForm, true);
+  setButtonBusy(elements.taskButton, true, "업무 배정 중");
+  setFeedback(elements.taskFeedback, `${roleLabel(body.role)}에게 업무를 전달하고 있습니다.`);
   try {
-    await requestJson(API.tasks(state.currentRunId), { method: "POST", body: JSON.stringify(body) });
-    setFeedback(elements.taskFeedback, `${roleLabel(body.role)}에게 업무를 배정했습니다.`, "success");
-    elements.taskTitle.value = "";
-    elements.taskInstructions.value = "";
-    await selectRun(state.currentRunId, { updateUrl: false });
+    const payload = await requestJson(API.tasks(targetRunId), { method: "POST", body: JSON.stringify(body) });
+    const task = asObject(payload.task);
+    if (!task.id) throw new Error("업무 실행 번호가 생성되지 않았습니다.");
+    const message = `${roleLabel(body.role)}에게 업무를 배정했습니다. 실행 완료까지 작업 모니터에서 추적합니다.`;
+    operation.trackTasks([{ id: task.id, runId: task.analysis_run_id || targetRunId }], message);
+    if (state.currentRunId === targetRunId) {
+      setFeedback(elements.taskFeedback, message);
+      elements.taskTitle.value = "";
+      elements.taskInstructions.value = "";
+      await selectRun(targetRunId, { updateUrl: false });
+    }
   } catch (error) {
-    setFeedback(elements.taskFeedback, `업무 배정 실패. ${error.message}`, "error");
+    if (state.currentRunId === targetRunId) {
+      setFeedback(elements.taskFeedback, `업무 배정 실패. ${error.message}`, "error");
+    }
+    operation.fail(`업무를 배정하지 못했습니다. ${error.message}`);
   } finally {
-    setFormDisabled(elements.taskForm, false);
+    state.taskSubmitting = false;
+    elements.taskForm?.setAttribute("aria-busy", "false");
+    setButtonBusy(elements.taskButton, false);
+    renderTasks(state.tasks);
   }
 }
 
@@ -696,29 +778,55 @@ async function handleTaskAction(event) {
   const taskId = button.dataset.taskId;
   const action = button.dataset.taskAction;
   if (!taskId || !action) return;
-  button.disabled = true;
+  const targetRunId = state.currentRunId;
+  const actionLabel = { report: "업무 상태 보고", resume: "업무 재개", cancel: "업무 취소" }[action] || "업무 처리";
+  const operation = startSiteOperation({
+    key: `task-${action}-${taskId}`,
+    title: actionLabel,
+    detail: `${actionLabel} 요청을 서버에 전달하고 있습니다.`,
+  });
+  setButtonBusy(button, true, "처리 중");
+  if (state.currentRunId === targetRunId) setFeedback(elements.taskFeedback, `${actionLabel} 요청을 처리하고 있습니다.`);
   try {
     if (action === "report") {
       const payload = await requestJson(API.taskReport(taskId), { method: "POST" });
       state.taskReports.set(taskId, payload.report);
-      setFeedback(elements.taskFeedback, "저장된 최신 업무 상태를 불러왔습니다.", "success");
-      renderTasks(state.tasks);
+      if (state.currentRunId === targetRunId) {
+        setFeedback(elements.taskFeedback, "저장된 최신 업무 상태를 불러왔습니다.", "success");
+      }
+      operation.succeed("저장된 최신 업무 상태와 보고 내용을 불러왔습니다.");
+      if (state.currentRunId === targetRunId) renderTasks(state.tasks);
       return;
     }
     const url = action === "resume" ? API.taskResume(taskId) : API.taskCancel(taskId);
-    await requestJson(url, { method: "POST" });
-    setFeedback(elements.taskFeedback, action === "resume" ? "업무를 새 시도로 재개했습니다." : "대기 업무를 취소했습니다.", "success");
-    await selectRun(state.currentRunId, { updateUrl: false });
+    const payload = await requestJson(url, { method: "POST" });
+    const message = action === "resume" ? "업무를 새 시도로 재개했습니다." : "대기 업무를 취소했습니다.";
+    if (action === "resume") {
+      const task = asObject(payload.task);
+      if (!task.id) throw new Error("재개된 업무 실행 번호가 없습니다.");
+      const trackingMessage = `${message} 완료 또는 실패까지 작업 모니터에서 추적합니다.`;
+      if (state.currentRunId === targetRunId) setFeedback(elements.taskFeedback, trackingMessage);
+      operation.trackTasks([{ id: task.id, runId: task.analysis_run_id || targetRunId }], trackingMessage);
+    } else {
+      if (state.currentRunId === targetRunId) setFeedback(elements.taskFeedback, message, "success");
+      operation.succeed(message);
+    }
+    if (state.currentRunId === targetRunId) await selectRun(targetRunId, { updateUrl: false });
   } catch (error) {
-    setFeedback(elements.taskFeedback, `업무 처리 실패. ${error.message}`, "error");
+    if (state.currentRunId === targetRunId) {
+      setFeedback(elements.taskFeedback, `업무 처리 실패. ${error.message}`, "error");
+    }
+    operation.fail(`${actionLabel} 요청이 실패했습니다. ${error.message}`);
   } finally {
-    button.disabled = false;
+    setButtonBusy(button, false);
   }
 }
 
 async function startCommittee(event) {
   event.preventDefault();
-  if (!state.currentRunId) return;
+  if (!state.currentRunId || state.committeeStarting) return;
+  const targetRunId = state.currentRunId;
+  const targetTicker = state.run?.ticker || "선택 실행";
   const participants = Array.from(document.querySelectorAll('input[name="committee-participant"]:checked')).map((input) => input.value);
   const body = {
     topic: String(elements.committeeTopic?.value || "").trim(),
@@ -729,30 +837,88 @@ async function startCommittee(event) {
     setFeedback(elements.committeeFeedback, "회의 주제와 참가 역할 2개 이상을 선택하세요.", "error");
     return;
   }
+  const operation = startSiteOperation({
+    title: `${targetTicker} 투자위원회 소집`,
+    detail: "참가 에이전트와 발언 한도를 검증하고 첫 회의 상태를 만들고 있습니다.",
+  });
+  state.committeeStarting = true;
+  elements.committeeStartForm?.setAttribute("aria-busy", "true");
   setFormDisabled(elements.committeeStartForm, true);
+  setButtonBusy(elements.committeeStartButton, true, "회의 소집 중");
+  setFeedback(elements.committeeFeedback, "투자위원회 참가자를 확인하고 첫 발언을 준비하고 있습니다.");
   try {
-    const payload = await requestJson(API.startCommittee(state.currentRunId), { method: "POST", body: JSON.stringify(body) }, 45_000);
-    renderCommittee(payload.committee);
-    setFeedback(elements.committeeFeedback, "투자위원회 회의를 소집했습니다.", "success");
-    scheduleCommitteePolling(800);
+    const payload = await requestJson(API.startCommittee(targetRunId), { method: "POST", body: JSON.stringify(body) }, 45_000);
+    const message = "투자위원회 회의를 소집했습니다. 발언 진행은 타임라인과 서버 진행 이벤트에 표시됩니다.";
+    operation.succeed(message);
+    if (state.currentRunId === targetRunId) {
+      state.committee = payload.committee || null;
+      setFeedback(elements.committeeFeedback, message, "success");
+      scheduleCommitteePolling(800);
+    }
   } catch (error) {
-    setFeedback(elements.committeeFeedback, `회의 소집 실패. ${error.message}`, "error");
-    setFormDisabled(elements.committeeStartForm, false);
+    if (state.currentRunId === targetRunId) {
+      setFeedback(elements.committeeFeedback, `회의 소집 실패. ${error.message}`, "error");
+    }
+    operation.fail(`회의를 소집하지 못했습니다. ${error.message}`);
+  } finally {
+    state.committeeStarting = false;
+    elements.committeeStartForm?.setAttribute("aria-busy", "false");
+    setButtonBusy(elements.committeeStartButton, false);
+    renderCommittee(state.committee);
   }
 }
 
 async function sendCommitteeCommand(command, { role = null, prompt = null, reason = null } = {}) {
-  if (!state.committee?.session_id) return;
+  if (!state.committee?.session_id || state.committeeCommandSubmitting) return;
+  const targetRunId = state.currentRunId;
+  const targetSessionId = state.committee.session_id;
   const body = { command };
   if (role) body.role = role;
   if (prompt) body.prompt = prompt;
   if (reason) body.reason = reason;
+  const actionLabel = {
+    directed_speak: "추가 발언 요청",
+    finish: "회의록 확정",
+    stop: "회의 중단",
+  }[command] || "회의 제어";
+  const actionButton = command === "directed_speak"
+    ? elements.committeeRequest
+    : command === "finish"
+      ? elements.committeeFinish
+      : elements.committeeStop;
+  const operation = startSiteOperation({
+    key: `committee-${command}-${targetSessionId}`,
+    title: actionLabel,
+    detail: `${actionLabel} 명령을 회의 브로커에 전달하고 있습니다.`,
+  });
+  [elements.committeeRequest, elements.committeeFinish, elements.committeeStop].forEach((button) => {
+    if (button) button.disabled = true;
+  });
+  state.committeeCommandSubmitting = true;
+  elements.committeeCommandForm?.setAttribute("aria-busy", "true");
+  setButtonBusy(actionButton, true, "명령 전달 중");
+  setFeedback(elements.committeeFeedback, `${actionLabel} 명령을 처리하고 있습니다.`);
   try {
-    await requestJson(API.committeeCommands(state.committee.session_id), { method: "POST", body: JSON.stringify(body) });
-    setFeedback(elements.committeeFeedback, command === "directed_speak" ? "추가 발언을 요청했습니다." : "회의 제어 명령을 전달했습니다.", "success");
-    scheduleCommitteePolling(500);
+    const payload = await requestJson(API.committeeCommands(targetSessionId), { method: "POST", body: JSON.stringify(body) });
+    const message = command === "directed_speak"
+      ? "추가 발언을 접수했습니다. 새 발언은 회의 타임라인에 표시됩니다."
+      : `${actionLabel} 명령을 접수했습니다. 최종 상태는 회의 타임라인과 서버 진행 이벤트에서 확인하세요.`;
+    operation.succeed(message);
+    if (state.currentRunId === targetRunId && state.committee?.session_id === targetSessionId) {
+      state.committee = payload.committee || state.committee;
+      setFeedback(elements.committeeFeedback, message, "success");
+      scheduleCommitteePolling(500);
+    }
   } catch (error) {
-    setFeedback(elements.committeeFeedback, `회의 명령 실패. ${error.message}`, "error");
+    if (state.currentRunId === targetRunId && state.committee?.session_id === targetSessionId) {
+      setFeedback(elements.committeeFeedback, `회의 명령 실패. ${error.message}`, "error");
+    }
+    operation.fail(`${actionLabel} 명령이 실패했습니다. ${error.message}`);
+  } finally {
+    state.committeeCommandSubmitting = false;
+    elements.committeeCommandForm?.setAttribute("aria-busy", "false");
+    setButtonBusy(actionButton, false);
+    renderCommittee(state.committee);
   }
 }
 
@@ -768,7 +934,8 @@ async function requestCommitteeSpeech(event) {
 }
 
 async function submitReview(decision) {
-  if (!state.currentRunId) return;
+  if (!state.currentRunId || state.reviewSubmitting) return;
+  const targetRunId = state.currentRunId;
   const reason = String(elements.reviewReason?.value || "").trim();
   if (reason.length < 4) {
     setFeedback(elements.reviewFeedback, "결정 사유를 4자 이상 입력하세요.", "error");
@@ -777,17 +944,40 @@ async function submitReview(decision) {
   }
   const apiDecision = { approve: "approved", hold: "deferred", reject: "rejected" }[decision];
   if (!apiDecision) return;
+  const decisionLabel = { approve: "승인", hold: "보류", reject: "거절" }[decision];
+  const activeButton = elements.reviewButtons.find((button) => button.dataset.reviewDecision === decision);
+  const operation = startSiteOperation({
+    key: `review-${targetRunId}`,
+    title: `${decisionLabel} 결정 기록`,
+    detail: "사람의 최종 판단과 사유를 의사결정 저널에 기록하고 있습니다.",
+  });
+  state.reviewSubmitting = true;
+  elements.reviewForm?.setAttribute("aria-busy", "true");
   elements.reviewButtons.forEach((button) => { button.disabled = true; });
+  setButtonBusy(activeButton, true, "기록 중");
+  setFeedback(elements.reviewFeedback, `${decisionLabel} 결정과 사유를 기록하고 있습니다.`);
   try {
-    await requestJson(API.review(state.currentRunId), {
+    const payload = await requestJson(API.review(targetRunId), {
       method: "POST",
       body: JSON.stringify({ decision: apiDecision, reason }),
     });
-    setFeedback(elements.reviewFeedback, "사람의 최종 결정을 기록했습니다.", "success");
+    const message = `사람의 ${decisionLabel} 결정을 의사결정 저널에 기록했습니다.`;
+    operation.succeed(message);
+    if (state.currentRunId === targetRunId) {
+      state.run = asObject(payload.run);
+      setFeedback(elements.reviewFeedback, message, "success");
+    }
     await loadRunList({ preserveSelection: true });
   } catch (error) {
-    setFeedback(elements.reviewFeedback, `결정 기록 실패. ${error.message}`, "error");
-    elements.reviewButtons.forEach((button) => { button.disabled = false; });
+    if (state.currentRunId === targetRunId) {
+      setFeedback(elements.reviewFeedback, `결정 기록 실패. ${error.message}`, "error");
+    }
+    operation.fail(`${decisionLabel} 결정을 기록하지 못했습니다. ${error.message}`);
+  } finally {
+    state.reviewSubmitting = false;
+    elements.reviewForm?.setAttribute("aria-busy", "false");
+    setButtonBusy(activeButton, false);
+    renderDecision(state.run);
   }
 }
 
@@ -823,18 +1013,27 @@ function bindEvents() {
   elements.scheduleForm?.addEventListener("submit", submitSchedule);
   elements.market?.addEventListener("change", () => syncMarketInput(elements.market, elements.ticker, elements.tickerSymbol, elements.tickerHelp));
   elements.scheduleMarket?.addEventListener("change", () => syncMarketInput(elements.scheduleMarket, elements.scheduleTicker, elements.scheduleTickerSymbol));
-  elements.scheduleRefresh?.addEventListener("click", loadSchedules);
+  elements.scheduleRefresh?.addEventListener("click", () => void loadSchedules({ userInitiated: true }));
   elements.scheduleList?.addEventListener("click", async (event) => {
     const button = event.target.closest('[data-schedule-action="cancel"]');
     if (!(button instanceof HTMLButtonElement)) return;
-    button.disabled = true;
+    const operation = startSiteOperation({
+      key: `schedule-cancel-${button.dataset.scheduleId}`,
+      title: "예약 분석 취소",
+      detail: "예약 실행 전 상태를 확인하고 대기열에서 취소하고 있습니다.",
+    });
+    setButtonBusy(button, true, "취소 중");
+    setFeedback(elements.scheduleFeedback, "선택한 예약을 취소하고 있습니다.");
     try {
       await requestJson(API.cancelSchedule(button.dataset.scheduleId), { method: "POST" });
       setFeedback(elements.scheduleFeedback, "예약을 취소했습니다.", "success");
+      operation.succeed("예약을 취소하고 최신 예약 목록을 반영했습니다.");
       await Promise.all([loadSchedules(), loadRunList({ preserveSelection: true })]);
     } catch (error) {
       setFeedback(elements.scheduleFeedback, `예약 취소 실패. ${error.message}`, "error");
-      button.disabled = false;
+      operation.fail(`예약을 취소하지 못했습니다. ${error.message}`);
+    } finally {
+      setButtonBusy(button, false);
     }
   });
   elements.runList?.addEventListener("click", (event) => {
@@ -865,6 +1064,6 @@ setScheduleDefault();
 activateTab("agents");
 await initSiteShell((payload, eventType) => {
   if (payload.run_id === state.currentRunId) void selectRun(state.currentRunId, { updateUrl: false });
-  scheduleListRefresh(eventType === "schedule");
+  scheduleListRefresh(["schedule", "scheduled_analysis"].includes(eventType));
 });
 await Promise.all([loadSchedules(), loadRunList()]);

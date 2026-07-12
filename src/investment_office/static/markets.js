@@ -8,8 +8,10 @@ import {
   formatDateTime,
   initSiteShell,
   requestJson,
+  setButtonBusy,
   setText,
-} from "./site-common.js?v=1";
+  startSiteOperation,
+} from "./site-common.js?v=4";
 
 const elements = {
   generatedAt: document.querySelector("#markets-generated-at"),
@@ -362,28 +364,57 @@ function renderSourcePayload(payload) {
   renderSources();
 }
 
-async function loadMarkets() {
+async function loadMarkets({ userInitiated = false } = {}) {
   if (state.loading) return;
   state.loading = true;
-  if (elements.refresh) elements.refresh.disabled = true;
-  setFeedback("공통 거시지표와 공급원 정책을 다시 조립하고 있습니다.");
-  const [overviewResult, sourceResult] = await Promise.allSettled([
-    requestJson(API.marketOverview),
-    requestJson(API.dataSources),
-  ]);
-  const errors = [];
-  if (overviewResult.status === "fulfilled") renderOverview(asObject(overviewResult.value));
-  else errors.push(`시장 국면 조회 실패. ${overviewResult.reason?.message || "알 수 없는 오류"}`);
-  if (sourceResult.status === "fulfilled") renderSourcePayload(asObject(sourceResult.value));
-  else errors.push(`공급원 상태 조회 실패. ${sourceResult.reason?.message || "알 수 없는 오류"}`);
+  const operation = userInitiated
+    ? startSiteOperation({
+      key: "markets-refresh",
+      title: "시장 관제 자료 갱신",
+      detail: "미국·한국 공통 거시지표와 자료원 준비 상태를 병렬로 확인하고 있습니다.",
+    })
+    : null;
+  if (elements.refresh) {
+    elements.refresh.disabled = true;
+    if (userInitiated) setButtonBusy(elements.refresh, true, "시장 자료 수집 중");
+  }
+  try {
+    setFeedback("공통 거시지표와 공급원 정책을 다시 조립하고 있습니다.");
+    const [overviewResult, sourceResult] = await Promise.allSettled([
+      requestJson(API.marketOverview),
+      requestJson(API.dataSources),
+    ]);
+    const errors = [];
+    if (overviewResult.status === "fulfilled") renderOverview(asObject(overviewResult.value));
+    else errors.push(`시장 국면 조회 실패. ${overviewResult.reason?.message || "알 수 없는 오류"}`);
+    if (sourceResult.status === "fulfilled") renderSourcePayload(asObject(sourceResult.value));
+    else errors.push(`공급원 상태 조회 실패. ${sourceResult.reason?.message || "알 수 없는 오류"}`);
 
-  if (errors.length) setFeedback(errors.join(" "), "error");
-  else setFeedback("시장 국면과 데이터 공급원 상태를 최신 기준으로 표시했습니다.", "success");
-  state.loading = false;
-  if (elements.refresh) elements.refresh.disabled = false;
+    if (errors.length) {
+      const message = errors.join(" ");
+      const tone = errors.length === 2 ? "error" : "warning";
+      setFeedback(message, tone);
+      if (errors.length === 2) operation?.fail(message);
+      else operation?.warn(`일부 자료만 갱신했습니다. ${message}`);
+    } else {
+      const message = "시장 국면과 데이터 공급원 상태를 최신 기준으로 표시했습니다.";
+      setFeedback(message, "success");
+      operation?.succeed(message);
+    }
+  } catch (error) {
+    const message = `시장 자료 갱신 실패. ${error.message}`;
+    setFeedback(message, "error");
+    operation?.fail(message);
+  } finally {
+    state.loading = false;
+    if (elements.refresh) {
+      if (userInitiated) setButtonBusy(elements.refresh, false);
+      else elements.refresh.disabled = false;
+    }
+  }
 }
 
-elements.refresh?.addEventListener("click", loadMarkets);
+elements.refresh?.addEventListener("click", () => void loadMarkets({ userInitiated: true }));
 elements.sourceFilters.forEach((button) => {
   button.addEventListener("click", () => {
     state.sourceFilter = button.dataset.sourceFilter || "all";

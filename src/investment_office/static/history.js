@@ -14,10 +14,12 @@ import {
   initSiteShell,
   requestJson,
   roleLabel,
+  setButtonBusy,
   setFeedback,
   setText,
+  startSiteOperation,
   workflowInfo,
-} from "./site-common.js?v=1";
+} from "./site-common.js?v=4";
 
 const elements = {
   filterForm: document.querySelector("#history-filter-form"),
@@ -27,6 +29,7 @@ const elements = {
   period: document.querySelector("#history-period"),
   count: document.querySelector("#history-count"),
   list: document.querySelector("#history-list"),
+  refresh: document.querySelector("#history-refresh"),
   feedback: document.querySelector("#history-feedback"),
   detail: document.querySelector("#history-detail"),
   live: document.querySelector("#site-live-region"),
@@ -38,6 +41,7 @@ const state = {
   filtered: [],
   selectedRunId: query.get("run") || null,
   detailToken: 0,
+  detailLoadingRunId: null,
   refreshTimer: null,
   detailRefreshPending: false,
 };
@@ -86,6 +90,10 @@ function renderHistoryList() {
     if (run.run_id === state.selectedRunId) button.classList.add("is-selected");
     button.type = "button";
     button.dataset.historyRun = run.run_id;
+    if (run.run_id === state.detailLoadingRunId) {
+      button.setAttribute("aria-busy", "true");
+      button.setAttribute("aria-disabled", "true");
+    }
     const identity = createElement("span", "history-row__identity");
     identity.append(createElement("strong", "", run.ticker || "종목 미정"));
     appendMarketBadge(identity, run.market, run.ticker);
@@ -106,24 +114,50 @@ function renderHistoryList() {
   }
 }
 
-async function loadHistory({ refreshDetail = true } = {}) {
+async function loadHistory({ refreshDetail = true, userInitiated = false } = {}) {
+  const operation = userInitiated
+    ? startSiteOperation({
+      key: "history-refresh",
+      title: "분석 이력 새로고침",
+      detail: "저장된 개별 분석·추천 분석·예약 분석의 최신 상태를 불러오고 있습니다.",
+    })
+    : null;
+  if (userInitiated) {
+    elements.filterForm?.setAttribute("aria-busy", "true");
+    setButtonBusy(elements.refresh, true, "기록 조회 중");
+  }
   try {
     setFeedback(elements.feedback, "저장된 실행 이력을 불러오는 중입니다.");
     const payload = await requestJson(`${API.runs}?limit=200`);
     state.runs = asArray(payload.runs);
     applyFilters();
-    setFeedback(elements.feedback, `최신 ${state.runs.length}건을 불러왔습니다. 기존 미분류는 과거 저장 형식의 실행입니다.`, "success");
+    const message = `최신 ${state.runs.length}건을 불러왔습니다. 기존 미분류는 과거 저장 형식의 실행입니다.`;
+    setFeedback(elements.feedback, message, "success");
+    operation?.succeed(message);
     if (refreshDetail && state.selectedRunId) await loadDetail(state.selectedRunId, { updateUrl: false });
   } catch (error) {
     setFeedback(elements.feedback, `이력 조회 실패. ${error.message}`, "error");
+    operation?.fail(`분석 이력을 불러오지 못했습니다. ${error.message}`);
+  } finally {
+    if (userInitiated) {
+      elements.filterForm?.setAttribute("aria-busy", "false");
+      setButtonBusy(elements.refresh, false);
+    }
   }
 }
 
-async function loadDetail(runId, { updateUrl = true } = {}) {
-  if (!runId) return;
+async function loadDetail(runId, { updateUrl = true, userInitiated = false } = {}) {
+  if (!runId || state.detailLoadingRunId === runId) return;
+  const operation = userInitiated
+    ? startSiteOperation({
+      title: "분석 기록 상세 조회",
+      detail: "실행 결과와 업무·회의·결정 카드를 함께 불러오고 있습니다.",
+    })
+    : null;
+  const token = ++state.detailToken;
+  state.detailLoadingRunId = runId;
   state.selectedRunId = runId;
   renderHistoryList();
-  const token = ++state.detailToken;
   if (updateUrl) {
     const url = new URL(window.location.href);
     url.searchParams.set("run", runId);
@@ -141,12 +175,18 @@ async function loadDetail(runId, { updateUrl = true } = {}) {
       requestJson(API.runCommittee(runId)),
       requestJson(API.decision(runId)),
     ]);
-    if (token !== state.detailToken) return;
+    if (token !== state.detailToken) {
+      operation?.warn("다른 기록을 선택해 이전 상세 조회 결과를 사용하지 않았습니다.");
+      return;
+    }
     const committee = committeePayload.committee || null;
     const minutesPayload = committee?.session_id
       ? await requestJson(API.committeeMinutes(committee.session_id))
       : { minutes: null };
-    if (token !== state.detailToken) return;
+    if (token !== state.detailToken) {
+      operation?.warn("다른 기록을 선택해 이전 회의록 조회 결과를 사용하지 않았습니다.");
+      return;
+    }
     renderDetail({
       run: asObject(runPayload.run),
       tasks: asArray(tasksPayload.tasks),
@@ -154,12 +194,23 @@ async function loadDetail(runId, { updateUrl = true } = {}) {
       minutes: minutesPayload.minutes,
       archive: archivePayload.decision,
     });
+    operation?.succeed("실행 결과와 업무·회의·결정 기록을 모두 표시했습니다.");
   } catch (error) {
+    if (token !== state.detailToken) {
+      operation?.warn("다른 기록을 선택해 이전 상세 조회 오류를 사용하지 않았습니다.");
+      return;
+    }
     clearElement(elements.detail);
     const errorTitle = createElement("h2", "sr-only", "기록 상세");
     errorTitle.id = "history-detail-title";
     elements.detail?.append(errorTitle);
     elements.detail?.append(createElement("p", "inline-error", `상세 기록 조회 실패. ${error.message}`));
+    operation?.fail(`분석 기록 상세를 불러오지 못했습니다. ${error.message}`);
+  } finally {
+    if (token === state.detailToken) {
+      state.detailLoadingRunId = null;
+      renderHistoryList();
+    }
   }
 }
 
@@ -294,13 +345,13 @@ function scheduleRefresh(refreshDetail = false) {
 
 elements.filterForm?.addEventListener("submit", (event) => {
   event.preventDefault();
-  void loadHistory();
+  void loadHistory({ userInitiated: true });
 });
 [elements.workflow, elements.status, elements.period].forEach((control) => control?.addEventListener("change", applyFilters));
 elements.ticker?.addEventListener("input", applyFilters);
 elements.list?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-history-run]");
-  if (button) void loadDetail(button.dataset.historyRun);
+  if (button) void loadDetail(button.dataset.historyRun, { userInitiated: true });
 });
 
 await initSiteShell((payload) => scheduleRefresh(payload.run_id === state.selectedRunId));

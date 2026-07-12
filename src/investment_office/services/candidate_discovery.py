@@ -327,7 +327,7 @@ class CandidateDiscoveryService:
             ticker=member.ticker,
             sector=member.sector,
             verdict=DiscoveryVerdict.EXCLUDE,
-            reasons=[f"Yahoo Finance 조회 실패로 제외했습니다. {detail}"],
+            reasons=[f"시장 가격 데이터 조회 실패로 제외했습니다. {detail}"],
             risks=["시장 데이터가 없어 정량 비교를 수행하지 못했습니다."],
             eod=None,
             source_url=None,

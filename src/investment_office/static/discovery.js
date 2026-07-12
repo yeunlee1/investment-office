@@ -1,4 +1,4 @@
-// 종목추천 페이지에서 1차 선별과 복수 심층분석, 서버 기반 완료 이력을 관리한다.
+// 전체시장 종목추천 작업의 단계별 진행과 복수 심층분석, 서버 완료 이력을 관리한다.
 import {
   API,
   appendMarketBadge,
@@ -6,7 +6,6 @@ import {
   asArray,
   asObject,
   clearElement,
-  classifyDiscoveryOutcome,
   compactText,
   createElement,
   formatDateTime,
@@ -19,16 +18,23 @@ import {
   setText,
   startSiteOperation,
   statusInfo,
-} from "./site-common.js?v=6";
+} from "./site-common.js?v=7";
+
+const DISCOVERY_SCAN_ENDPOINT = "/api/discoveries/scans";
+const SCAN_POLL_INTERVAL = 900;
+const BACKEND_STAGES = ["universe", "fundamentals", "liquidity", "sector", "ranking"];
+const SCAN_TERMINAL = new Set(["complete", "partial", "failed"]);
 
 const elements = {
   screenForm: document.querySelector("#discovery-screen-form"),
   screenButton: document.querySelector('#discovery-screen-form button[type="submit"]'),
   market: document.querySelector("#discovery-market"),
   strategy: document.querySelector("#discovery-strategy"),
+  riskProfile: document.querySelector("#discovery-risk-profile"),
   feedback: document.querySelector("#discovery-feedback"),
   universe: document.querySelector("#discovery-universe"),
-  qualified: document.querySelector("#discovery-qualified"),
+  fundamentals: document.querySelector("#discovery-fundamentals"),
+  liquidity: document.querySelector("#discovery-liquidity"),
   shortlist: document.querySelector("#discovery-shortlist"),
   candidateList: document.querySelector("#discovery-candidate-list"),
   selection: document.querySelector("#discovery-selection"),
@@ -44,6 +50,11 @@ const state = {
   runs: [],
   latestBatchId: null,
   pollTimer: null,
+  scanPollTimer: null,
+  scanJobId: null,
+  scanJob: null,
+  scanPollFailures: 0,
+  scanOperation: null,
   eventRefreshTimer: null,
   loading: false,
 };
@@ -59,7 +70,117 @@ function setStage(stage, status, label) {
   const element = document.querySelector(`[data-discovery-stage="${stage}"]`);
   if (!element) return;
   element.dataset.status = status;
+  element.setAttribute("aria-busy", String(["active", "running"].includes(status)));
+  if (["done", "completed"].includes(status)) element.style.setProperty("--stage-progress", "1");
+  else if (["idle", "error", "failed", "blocked"].includes(status)) element.style.setProperty("--stage-progress", "0");
   setText(element.querySelector("output"), label, "대기");
+}
+
+function numericCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? count : 0;
+}
+
+function backendStage(job, stageName) {
+  return asArray(job?.stages).find((stage) => stage?.stage === stageName) || null;
+}
+
+function setStageField(element, field, value) {
+  setText(element?.querySelector(`[data-stage-field="${field}"]`), value, "0");
+}
+
+function renderBackendStage(job, stageName) {
+  const element = document.querySelector(`[data-discovery-stage="${stageName}"]`);
+  if (!element) return;
+  const stage = backendStage(job, stageName);
+  const total = numericCount(stage?.total);
+  const processed = numericCount(stage?.processed);
+  const passed = numericCount(stage?.passed);
+  const failed = numericCount(stage?.failed);
+  const cached = numericCount(stage?.cached);
+  const jobStatus = String(job?.status || "queued").toLowerCase();
+  const currentStage = String(job?.current_stage || "");
+  const completed = Boolean(stage?.completed_at);
+  const started = Boolean(stage?.started_at) || currentStage === stageName;
+  const firstIncompleteStage = BACKEND_STAGES.find(
+    (name) => !backendStage(job, name)?.completed_at,
+  ) || currentStage || "ranking";
+  const failedStage = currentStage || firstIncompleteStage;
+  const failedHere = jobStatus === "failed" && failedStage === stageName;
+  const partialHere = jobStatus === "partial" && stageName === "ranking";
+  const progress = total > 0 ? Math.min(1, processed / total) : Number(completed);
+
+  let status = "idle";
+  let label = "대기";
+  if (failedHere) {
+    status = "error";
+    label = "자료 오류";
+  } else if (partialHere) {
+    status = "partial";
+    label = `${processed} / ${total || "—"}`;
+  } else if (completed) {
+    status = "done";
+    label = `${processed} / ${total || processed}`;
+  } else if (started && !SCAN_TERMINAL.has(jobStatus)) {
+    status = "active";
+    label = `${processed} / ${total || "—"}`;
+  } else if (jobStatus === "failed" || jobStatus === "partial") {
+    status = "blocked";
+    label = "중단";
+  }
+
+  setStage(stageName, status, label);
+  element.style.setProperty("--stage-progress", String(progress));
+  setStageField(element, "processed", `${processed} / ${total || "—"}`);
+  setStageField(element, "passed", String(passed));
+  setStageField(element, "failed", String(failed));
+  setStageField(element, "cached", String(cached));
+  setText(
+    element.querySelector("[data-stage-message]"),
+    failedHere
+      ? job?.error || job?.message || stage?.message
+      : stage?.message || "작업 대기 중",
+    "작업 대기 중",
+  );
+}
+
+function renderBackendStages(job) {
+  BACKEND_STAGES.forEach((stageName) => renderBackendStage(job, stageName));
+}
+
+function resetBackendStages() {
+  BACKEND_STAGES.forEach((stageName) => {
+    const element = document.querySelector(`[data-discovery-stage="${stageName}"]`);
+    setStage(stageName, "idle", "대기");
+    setStageField(element, "processed", "0 / —");
+    setStageField(element, "passed", "0");
+    setStageField(element, "failed", "0");
+    setStageField(element, "cached", "0");
+    setText(element?.querySelector("[data-stage-message]"), "작업 대기 중");
+  });
+}
+
+function updateScanMetrics(job, discovery = null) {
+  const universe = backendStage(job, "universe");
+  const fundamentals = backendStage(job, "fundamentals");
+  const liquidity = backendStage(job, "liquidity");
+  const ranking = backendStage(job, "ranking");
+  const candidates = asArray(discovery?.candidates);
+  const universeTotal = universe
+    ? numericCount(universe.completed_at ? universe.passed : universe.total)
+    : numericCount(discovery?.universe_size);
+  const fundamentalsPassed = fundamentals
+    ? numericCount(fundamentals.passed)
+    : numericCount(discovery?.fundamentals_passed_count || discovery?.financial_passed_count);
+  const liquidityPassed = liquidity
+    ? numericCount(liquidity.passed)
+    : numericCount(discovery?.liquidity_passed_count || discovery?.evaluated_count);
+  const hasFinalCandidates = discovery !== null && Object.hasOwn(discovery, "candidates");
+  const shortlistCount = hasFinalCandidates ? candidates.length : numericCount(ranking?.passed);
+  setText(elements.universe, universeTotal || "—");
+  setText(elements.fundamentals, fundamentalsPassed || (universeTotal ? "0" : "—"));
+  setText(elements.liquidity, liquidityPassed || (universeTotal ? "0" : "—"));
+  setText(elements.shortlist, shortlistCount || (SCAN_TERMINAL.has(String(job?.status || "")) ? "0" : "—"));
 }
 
 function selectedTickers() {
@@ -93,12 +214,44 @@ function verdictLabel(verdict) {
   }[String(verdict || "watch")] || "관찰 후보";
 }
 
-function renderCandidates(candidates) {
+function formattedScore(value) {
+  const rawValue = value && typeof value === "object" ? value.score ?? value.value : value;
+  const score = Number(rawValue);
+  return Number.isFinite(score) ? score.toFixed(1) : null;
+}
+
+function firstScore(...values) {
+  return values.map(formattedScore).find((value) => value !== null) || null;
+}
+
+function scoreBreakdown(candidate) {
+  const breakdown = asObject(candidate.breakdown || candidate.score_breakdown || candidate.scores);
+  return [
+    ["재무", firstScore(breakdown.financial, breakdown.fundamentals, breakdown.financial_strength)],
+    ["성장", firstScore(breakdown.growth, breakdown.execution)],
+    ["업종", firstScore(breakdown.sector, breakdown.industry, breakdown.industry_momentum)],
+    ["업종전망", firstScore(breakdown.outlook, breakdown.industry_outlook)],
+    ["차트", firstScore(breakdown.chart, breakdown.technical, breakdown.momentum)],
+  ].filter(([, value]) => value !== null);
+}
+
+function renderCandidateEmpty(message, detail = "스캔을 시작하면 비교 카드가 표시됩니다.", tone = "idle") {
+  clearElement(elements.candidateList);
+  const empty = createElement("li", `empty-state candidate-empty is-${tone}`);
+  empty.append(createElement("strong", "", message), createElement("span", "", detail));
+  elements.candidateList?.append(empty);
+  updateSelection();
+}
+
+function renderCandidates(candidates, emptyState = null) {
   clearElement(elements.candidateList);
   const values = asArray(candidates).slice(0, 8);
   if (!values.length) {
-    elements.candidateList?.append(createElement("li", "empty-state", "추천 후보 찾기를 실행하면 비교 카드가 표시됩니다."));
-    updateSelection();
+    renderCandidateEmpty(
+      emptyState?.message || "추천 후보 찾기를 실행하세요.",
+      emptyState?.detail,
+      emptyState?.tone,
+    );
     return;
   }
   values.forEach((candidate, index) => {
@@ -120,9 +273,21 @@ function renderCandidates(candidates) {
     identityMeta.append(createElement("span", "candidate-card__symbol", ticker || "코드 미정"));
     appendMarketBadge(identityMeta, candidate.market || state.discovery?.market, ticker);
     identity.append(identityMeta);
-    const score = createElement("span", "candidate-card__score", Number.isFinite(Number(candidate.score)) ? Number(candidate.score).toFixed(2) : "—");
+    const score = createElement("span", "candidate-card__score", formattedScore(candidate.score) || "—");
     label.append(checkbox, identity, score);
     item.append(label);
+
+    const breakdown = scoreBreakdown(candidate);
+    if (breakdown.length) {
+      const scoreGrid = createElement("dl", "candidate-card__breakdown");
+      scoreGrid.setAttribute("aria-label", `${companyName} 세부 평가 점수`);
+      breakdown.forEach(([name, value]) => {
+        const metric = createElement("div");
+        metric.append(createElement("dt", "", name), createElement("dd", "mono", value));
+        scoreGrid.append(metric);
+      });
+      item.append(scoreGrid);
+    }
 
     const comparison = createElement("div", "candidate-card__comparison");
     const reason = createElement("section");
@@ -136,7 +301,7 @@ function renderCandidates(candidates) {
 
     const sourceUrl = safeSourceUrl(candidate.source_url || candidate.source);
     if (sourceUrl) {
-      const source = createElement("a", "candidate-card__source", "가격 데이터 출처 확인 ↗");
+      const source = createElement("a", "candidate-card__source", "근거 자료 출처 확인 ↗");
       source.href = sourceUrl;
       source.target = "_blank";
       source.rel = "noreferrer";
@@ -147,20 +312,20 @@ function renderCandidates(candidates) {
   updateSelection();
 }
 
-function renderDiscovery(discovery) {
+function renderDiscovery(discovery, job = state.scanJob, emptyState = null) {
   state.discovery = discovery;
   const candidates = asArray(discovery?.candidates);
-  setText(elements.universe, discovery?.universe_size, "—");
-  setText(elements.qualified, discovery?.qualified_count, "—");
-  setText(elements.shortlist, candidates.length, "0");
-  renderCandidates(candidates);
-  const universeSize = Number(discovery?.universe_size || 0);
-  const evaluatedCount = Number(discovery?.evaluated_count || 0);
-  setStage("scan", evaluatedCount > 0 ? "done" : "error", `${evaluatedCount} / ${universeSize || 30}`);
-  setStage("shortlist", evaluatedCount > 0 ? "done" : "error", evaluatedCount > 0 ? `${candidates.length}개` : "평가 불가");
-  setStage("agents", "idle", candidates.length ? "선택 대기" : evaluatedCount > 0 ? "후보 없음" : "스캔 실패");
+  updateScanMetrics(job, discovery);
+  renderCandidates(
+    candidates,
+    emptyState || {
+      message: "기준을 모두 통과한 후보가 없습니다.",
+      detail: "선택한 위험성향과 각 단계의 미통과 수를 확인하세요.",
+      tone: "complete",
+    },
+  );
+  setStage("agents", "idle", candidates.length ? "선택 대기" : "후보 없음");
   setStage("review", "idle", "분석 대기");
-  return classifyDiscoveryOutcome(discovery);
 }
 
 function latestBatchRuns() {
@@ -174,10 +339,6 @@ function latestBatchRuns() {
 function renderStagesFromRuns() {
   const batch = latestBatchRuns();
   if (!batch.length) return;
-  if (!state.discovery) {
-    setStage("scan", "done", "이전 실행");
-    setStage("shortlist", "done", `${batch.length}개 선택`);
-  }
   const active = batch.filter((run) => ACTIVE.has(run.status)).length;
   const failed = batch.filter((run) => run.status === "failed").length;
   const review = batch.filter((run) => run.status === "review").length;
@@ -286,49 +447,177 @@ async function loadRuns() {
   }
 }
 
+function stopScanPolling() {
+  if (state.scanPollTimer) window.clearTimeout(state.scanPollTimer);
+  state.scanPollTimer = null;
+}
+
+function scheduleScanPolling(delay = SCAN_POLL_INTERVAL) {
+  stopScanPolling();
+  if (!state.scanJobId) return;
+  state.scanPollTimer = window.setTimeout(pollScanJob, delay);
+}
+
+function scanJobPayload(payload) {
+  return asObject(payload?.job || payload);
+}
+
+function currentScanSummary(job) {
+  const stageName = String(job?.current_stage || "universe");
+  const stage = backendStage(job, stageName);
+  const processed = numericCount(stage?.processed);
+  const total = numericCount(stage?.total);
+  return stage?.message || `${stageName} 단계에서 ${processed} / ${total || "—"}개를 처리하고 있습니다.`;
+}
+
+function releaseScanControls() {
+  state.loading = false;
+  state.scanJobId = null;
+  stopScanPolling();
+  setButtonBusy(elements.screenButton, false);
+  setFormDisabled(elements.screenForm, false);
+  updateSelection();
+}
+
+function finishScanJob(job) {
+  const status = String(job?.status || "failed").toLowerCase();
+  const result = asObject(job?.result);
+  const detail = compactText(job?.error || job?.message, 260)
+    || "공급원 또는 처리 단계의 상세 오류가 보고되지 않았습니다.";
+  const operation = state.scanOperation;
+
+  if (status === "failed") {
+    state.discovery = null;
+    updateScanMetrics(job);
+    renderCandidateEmpty(
+      "전체시장 스캔을 완료하지 못했습니다.",
+      `${detail} 단계별 실패 수와 공급원 상태를 확인한 뒤 다시 실행하세요.`,
+      "failed",
+    );
+    setStage("agents", "error", "선별 실패");
+    setStage("review", "error", "검토 불가");
+    setFeedback(elements.feedback, `후보 스캔 실패. ${detail}`, "error");
+    operation?.fail(`전체시장 후보 스캔이 실패했습니다. ${detail}`);
+  } else if (status === "partial") {
+    renderDiscovery(result, job, {
+      message: "자료 공백으로 후보를 확정하지 못했습니다.",
+      detail: `${detail} 현재 표시값을 정상 완료 결과로 해석하지 마세요.`,
+      tone: "partial",
+    });
+    setFeedback(elements.feedback, `후보 스캔 일부 완료. ${detail}`, "warning");
+    operation?.warn(`일부 공급원 또는 종목 자료가 누락됐습니다. ${detail}`);
+  } else {
+    renderDiscovery(result, job);
+    const count = asArray(result.candidates).length;
+    const message = count
+      ? `${marketLabel(result.market)} 전체시장에서 심층검토 후보 ${count}개를 선별했습니다.`
+      : "모든 단계를 정상 완료했지만 현재 기준을 모두 통과한 후보는 없습니다.";
+    setFeedback(elements.feedback, message, count ? "success" : "neutral");
+    operation?.succeed(message);
+  }
+
+  state.scanOperation = null;
+  releaseScanControls();
+}
+
+function renderScanJob(job) {
+  state.scanJob = job;
+  renderBackendStages(job);
+  updateScanMetrics(job, asObject(job?.result));
+  const status = String(job?.status || "queued").toLowerCase();
+  if (SCAN_TERMINAL.has(status)) {
+    finishScanJob(job);
+    return;
+  }
+  const summary = status === "queued"
+    ? "전체시장 스캔이 대기열에 등록됐습니다. 실행 순서를 기다리고 있습니다."
+    : currentScanSummary(job);
+  setFeedback(elements.feedback, summary);
+  state.scanOperation?.update(summary);
+}
+
+async function pollScanJob() {
+  const jobId = state.scanJobId;
+  if (!jobId) return;
+  try {
+    const payload = await requestJson(
+      `${DISCOVERY_SCAN_ENDPOINT}/${encodeURIComponent(jobId)}`,
+      {},
+      15_000,
+    );
+    state.scanPollFailures = 0;
+    renderScanJob(scanJobPayload(payload));
+    if (state.scanJobId) scheduleScanPolling();
+  } catch (error) {
+    state.scanPollFailures += 1;
+    const message = `스캔 상태 조회 ${state.scanPollFailures}회 실패. ${error.message}`;
+    setFeedback(elements.feedback, message, "warning");
+    state.scanOperation?.update(message);
+    if (state.scanPollFailures < 3) {
+      scheduleScanPolling(SCAN_POLL_INTERVAL * 2);
+      return;
+    }
+    renderCandidateEmpty(
+      "진행 상태 연결이 끊겼습니다.",
+      "서버 작업의 성공 여부를 확인하지 못했으므로 정상 완료로 처리하지 않았습니다.",
+      "failed",
+    );
+    setStage(String(state.scanJob?.current_stage || "universe"), "error", "조회 중단");
+    state.scanOperation?.warn("전체시장 스캔 상태 연결이 끊겨 결과 확인을 중단했습니다.");
+    state.scanOperation = null;
+    releaseScanControls();
+  }
+}
+
 async function submitScreen(event) {
   event.preventDefault();
   if (state.loading) return;
   state.loading = true;
+  state.discovery = null;
+  state.scanJob = null;
+  state.scanPollFailures = 0;
+  stopScanPolling();
   setFormDisabled(elements.screenForm, true);
   updateSelection();
+  resetBackendStages();
+  renderCandidateEmpty(
+    "전체시장 원장을 구성하고 있습니다.",
+    "재무, 가격·유동성, 업종, 최종 순위 단계가 실시간으로 갱신됩니다.",
+    "running",
+  );
+  setStage("agents", "idle", "선별 대기");
+  setStage("review", "idle", "분석 대기");
   const market = elements.market?.value === "kr" ? "kr" : "us";
   const strategy = elements.strategy?.value || "balanced";
-  const operation = startSiteOperation({
+  const riskProfile = elements.riskProfile?.value || "balanced";
+  state.scanOperation = startSiteOperation({
     key: "discovery-screen",
-    title: `${marketLabel(market)} 추천 후보 스캔`,
-    detail: "대표주 30종목의 가격 데이터를 요청하고 완료 일봉과 정량 점수를 비교하고 있습니다.",
+    title: `${marketLabel(market)} 전체시장 후보 스캔`,
+    detail: "전체 상장 보통주 원장을 구성하고 단계별 필터를 준비하고 있습니다.",
   });
-  setButtonBusy(elements.screenButton, true, "30종목 조회 중");
-  setFeedback(elements.feedback, `${marketLabel(market)} 대표주 30종목의 가격 데이터를 불러와 완료 일봉을 비교하고 있습니다.`);
-  setStage("scan", "active", "조회 중");
-  setStage("shortlist", "idle", "대기");
+  setButtonBusy(elements.screenButton, true, "전체시장 처리 중");
+  setFeedback(elements.feedback, `${marketLabel(market)} 전체 상장 보통주 원장을 요청했습니다.`);
   try {
-    const payload = await requestJson(API.discoveryScreen, {
+    const payload = await requestJson(DISCOVERY_SCAN_ENDPOINT, {
       method: "POST",
-      body: JSON.stringify({ market, strategy, limit: 8 }),
-    }, 120_000);
-    const outcome = renderDiscovery(asObject(payload.discovery));
-    if (outcome.state === "failed") {
-      setFeedback(elements.feedback, `후보 스캔 실패. ${outcome.message}`, "error");
-      operation.fail(outcome.message);
-    } else if (outcome.state === "warning") {
-      setFeedback(elements.feedback, `후보 스캔 일부 완료. ${outcome.message}`, "warning");
-      operation.warn(outcome.message);
-    } else {
-      setFeedback(elements.feedback, outcome.message, "success");
-      operation.succeed(outcome.message);
-    }
+      body: JSON.stringify({ market, strategy, risk_profile: riskProfile, limit: 8 }),
+    }, 20_000);
+    const job = scanJobPayload(payload);
+    if (!job.id) throw new Error("스캔 작업 번호가 생성되지 않았습니다.");
+    state.scanJobId = String(job.id);
+    renderScanJob(job);
+    if (state.scanJobId) scheduleScanPolling();
   } catch (error) {
-    setStage("scan", "error", "실패");
-    setStage("shortlist", "error", "중단");
-    setFeedback(elements.feedback, `후보 선별 실패. ${error.message}`, "error");
-    operation.fail(`후보 선별 요청이 실패했습니다. ${error.message}`);
-  } finally {
-    state.loading = false;
-    setButtonBusy(elements.screenButton, false);
-    setFormDisabled(elements.screenForm, false);
-    updateSelection();
+    setStage("universe", "error", "요청 실패");
+    renderCandidateEmpty(
+      "전체시장 스캔을 시작하지 못했습니다.",
+      error.message,
+      "failed",
+    );
+    setFeedback(elements.feedback, `후보 선별 요청 실패. ${error.message}`, "error");
+    state.scanOperation?.fail(`전체시장 후보 선별 요청이 실패했습니다. ${error.message}`);
+    state.scanOperation = null;
+    releaseScanControls();
   }
 }
 
@@ -386,15 +675,26 @@ async function submitAnalysis(event) {
 
 elements.screenForm?.addEventListener("submit", submitScreen);
 elements.analyzeForm?.addEventListener("submit", submitAnalysis);
-elements.market?.addEventListener("change", () => {
+function resetDiscoverySelection() {
+  if (state.loading) return;
   state.discovery = null;
-  renderCandidates([]);
+  state.scanJob = null;
+  renderCandidateEmpty(
+    "새 조건으로 스캔할 준비가 됐습니다.",
+    "전체 상장 보통주 원장에서 다시 시작합니다.",
+  );
   setText(elements.universe, "—");
-  setText(elements.qualified, "—");
+  setText(elements.fundamentals, "—");
+  setText(elements.liquidity, "—");
   setText(elements.shortlist, "—");
-  ["scan", "shortlist", "agents", "review"].forEach((stage) => setStage(stage, "idle", "대기"));
+  resetBackendStages();
+  ["agents", "review"].forEach((stage) => setStage(stage, "idle", "대기"));
   const market = elements.market?.value === "kr" ? "kr" : "us";
-  setFeedback(elements.feedback, `${marketLabel(market)} 시장 유니버스를 선택했습니다. 후보 스캔을 다시 실행하세요.`);
+  setFeedback(elements.feedback, `${marketLabel(market)} 전체시장 조건이 변경됐습니다. 후보 스캔을 다시 실행하세요.`);
+}
+
+[elements.market, elements.strategy, elements.riskProfile].forEach((control) => {
+  control?.addEventListener("change", resetDiscoverySelection);
 });
 elements.candidateList?.addEventListener("change", (event) => {
   const input = event.target.closest('input[name="discovery-ticker"]');
@@ -402,10 +702,15 @@ elements.candidateList?.addEventListener("change", (event) => {
 });
 window.addEventListener("beforeunload", () => {
   stopPolling();
+  stopScanPolling();
   if (state.eventRefreshTimer) window.clearTimeout(state.eventRefreshTimer);
 });
 
-renderCandidates([]);
+resetBackendStages();
+renderCandidateEmpty(
+  "추천 후보 스캔을 시작하세요.",
+  "미국 전체 상장 보통주 또는 한국 KOSPI·KOSDAQ 전체 보통주에서 단계별로 후보를 좁힙니다.",
+);
 await initSiteShell((_payload, eventType) => {
   if (["run", "analysis", "agent", "review", "fault"].includes(eventType)) scheduleEventRefresh();
 });

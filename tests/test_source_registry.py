@@ -34,6 +34,24 @@ def test_lookup_returns_official_financial_and_macro_sources() -> None:
     assert DataDomain.MACRO in ecos.domains
 
 
+def test_full_market_reference_sources_are_ready_without_api_keys() -> None:
+    us_sources = list_source_policies(market=Market.US, domain=DataDomain.REFERENCE)
+    kr_sources = list_source_policies(market=Market.KR, domain=DataDomain.REFERENCE)
+
+    assert [source.id for source in us_sources] == [SourceId.NASDAQ_TRADER]
+    assert [source.id for source in kr_sources] == [SourceId.KRX_KIND]
+    assert validate_source_configuration(SourceId.NASDAQ_TRADER, {}).analysis_ready is True
+    assert validate_source_configuration(SourceId.KRX_KIND, {}).analysis_ready is True
+
+
+def test_full_market_dart_bulk_source_is_ready_without_api_key() -> None:
+    validation = validate_source_configuration(SourceId.DART_BULK, {})
+
+    assert validation.ready is True
+    assert validation.analysis_ready is True
+    assert validation.missing_key_env_vars == ()
+
+
 def test_unknown_source_is_rejected() -> None:
     with pytest.raises(UnknownSourceError, match="등록되지 않은"):
         get_source_policy("unknown")

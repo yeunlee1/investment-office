@@ -253,7 +253,8 @@ def test_all_site_actions_publish_visible_operation_feedback() -> None:
     assert DISCOVERY_SCRIPT.count("startSiteOperation({") >= 2
     assert MARKETS_SCRIPT.count("startSiteOperation({") >= 1
     assert HISTORY_SCRIPT.count("startSiteOperation({") >= 2
-    assert 'classifyDiscoveryOutcome' in DISCOVERY_SCRIPT
+    assert 'const SCAN_TERMINAL = new Set(["complete", "partial", "failed"]);' in DISCOVERY_SCRIPT
+    assert "renderScanJob(job)" in DISCOVERY_SCRIPT
     assert 'evaluatedCount === 0' in COMMON_SCRIPT
     assert '실제 평가는 0건입니다' in COMMON_SCRIPT
     assert '.operation-monitor[data-state="running"]' in STYLES

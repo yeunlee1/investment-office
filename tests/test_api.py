@@ -26,6 +26,14 @@ from investment_office.domain import (
     SnapshotKind,
 )
 from investment_office.main import _log_background_task_failure, _probe_codex, create_app
+from investment_office.services.discovery_jobs import (
+    DISCOVERY_STAGE_ORDER,
+    DiscoveryJobOutcome,
+    DiscoveryProgressCallback,
+    DiscoveryProgressUpdate,
+    DiscoveryStage,
+)
+from investment_office.services.full_market_discovery import FullMarketDiscoveryService
 from investment_office.services.market_data import YahooFinanceClient
 from investment_office.services.market_overview import MarketOverviewService
 from investment_office.services.orchestrator import AnalysisProvider, RiskFunction
@@ -120,6 +128,61 @@ class FakeMarketData:
         self.closed = True
 
 
+class FakeFullMarketDiscoveryService:
+    def runner(
+        self,
+        *,
+        market: object,
+        strategy: object,
+        risk_profile: object,
+        limit: int,
+        force_refresh: bool = False,
+    ) -> Callable[[DiscoveryProgressCallback], Awaitable[DiscoveryJobOutcome]]:
+        del force_refresh
+
+        async def run(progress: DiscoveryProgressCallback) -> DiscoveryJobOutcome:
+            counts = {
+                DiscoveryStage.UNIVERSE: (2_500, 2_300),
+                DiscoveryStage.FUNDAMENTALS: (2_300, 420),
+                DiscoveryStage.LIQUIDITY: (420, 180),
+                DiscoveryStage.SECTOR: (180, 180),
+                DiscoveryStage.RANKING: (180, min(limit, 8)),
+            }
+            for stage in DISCOVERY_STAGE_ORDER:
+                total, passed = counts[stage]
+                await progress(
+                    DiscoveryProgressUpdate(
+                        stage=stage,
+                        total=total,
+                        processed=total,
+                        passed=passed,
+                        failed=total - passed,
+                        message=f"{stage.value} 완료",
+                        completed=True,
+                    )
+                )
+            return DiscoveryJobOutcome(
+                result={
+                    "market": str(getattr(market, "value", market)),
+                    "strategy": str(getattr(strategy, "value", strategy)),
+                    "risk_profile": str(getattr(risk_profile, "value", risk_profile)),
+                    "universe_size": 2_300,
+                    "fundamentals_passed_count": 420,
+                    "liquidity_passed_count": 180,
+                    "candidates": [
+                        {
+                            "ticker": "AAPL",
+                            "company_name": "애플",
+                            "score": 82.1,
+                        }
+                    ],
+                },
+                message="전체시장 후보 선별을 마쳤습니다.",
+            )
+
+        return run
+
+
 class FlakyScheduleStorage(InMemoryStorage):
     def __init__(self) -> None:
         super().__init__()
@@ -172,7 +235,11 @@ def fake_risk(snapshot: FakeSnapshot, chairman: dict[str, Any]) -> FakeRiskResul
     return FakeRiskResult()
 
 
-def make_app(*, storage: InMemoryStorage | None = None) -> tuple[FastAPI, FakeMarketData]:
+def make_app(
+    *,
+    storage: InMemoryStorage | None = None,
+    full_market_discovery_service: FullMarketDiscoveryService | None = None,
+) -> tuple[FastAPI, FakeMarketData]:
     market = FakeMarketData()
     settings = Settings(database_url="mariadb+pymysql://unused:unused@127.0.0.1:3307/unused")
     app = create_app(
@@ -184,6 +251,7 @@ def make_app(*, storage: InMemoryStorage | None = None) -> tuple[FastAPI, FakeMa
             MarketOverviewService,
             FakeMarketOverviewService(),
         ),
+        full_market_discovery_service=full_market_discovery_service,
         research_data=None,
         risk_function=cast(RiskFunction, fake_risk),
     )
@@ -798,6 +866,57 @@ async def test_discovery_api_screens_then_runs_selected_candidates_with_human_ga
                 json={"tickers": ["AAPL", "MSFT", "NVDA", "META"]},
             )
             assert too_many.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_full_market_discovery_scan_returns_job_and_stage_progress() -> None:
+    app, _ = make_app(
+        full_market_discovery_service=cast(
+            FullMarketDiscoveryService,
+            FakeFullMarketDiscoveryService(),
+        )
+    )
+
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://127.0.0.1",
+        ) as client:
+            created = await client.post(
+                "/api/discoveries/scans",
+                json={
+                    "market": "us",
+                    "strategy": "balanced",
+                    "risk_profile": "aggressive",
+                    "limit": 8,
+                },
+            )
+            assert created.status_code == 202
+            queued = created.json()["job"]
+            assert queued["status"] == "queued"
+            assert [stage["stage"] for stage in queued["stages"]] == [
+                stage.value for stage in DISCOVERY_STAGE_ORDER
+            ]
+
+            job_id = queued["id"]
+            for _ in range(100):
+                response = await client.get(f"/api/discoveries/scans/{job_id}")
+                assert response.status_code == 200
+                job = response.json()["job"]
+                if job["status"] in {"complete", "partial", "failed"}:
+                    break
+                await asyncio.sleep(0.01)
+
+            assert job["status"] == "complete"
+            assert job["result"]["universe_size"] == 2_300
+            assert job["result"]["risk_profile"] == "aggressive"
+            assert job["stages"][0]["passed"] == 2_300
+            assert job["stages"][1]["passed"] == 420
+            assert job["stages"][2]["passed"] == 180
+
+            missing = await client.get(f"/api/discoveries/scans/{uuid4()}")
+            assert missing.status_code == 404
 
 
 @pytest.mark.asyncio

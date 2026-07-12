@@ -34,7 +34,7 @@ def test_site_static_asset_versions_are_synchronized() -> None:
     base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
     css_version = re.search(r'/static/site\.css\?v=(\d+)', base)
     assert css_version is not None
-    assert css_version.group(1) == "6"
+    assert css_version.group(1) == "7"
 
     for name in ("hub", "markets", "analysis", "discovery", "history"):
         template = (TEMPLATES / f"{name if name != 'hub' else 'index'}.html").read_text(
@@ -45,7 +45,8 @@ def test_site_static_asset_versions_are_synchronized() -> None:
         import_version = re.search(r'\./site-common\.js\?v=(\d+)', script)
         assert template_version is not None
         assert import_version is not None
-        assert template_version.group(1) == import_version.group(1) == "6"
+        expected_version = "7" if name == "discovery" else "6"
+        assert template_version.group(1) == import_version.group(1) == expected_version
 
     for name in ("analysis", "history"):
         script = (STATIC / f"{name}.js").read_text(encoding="utf-8")

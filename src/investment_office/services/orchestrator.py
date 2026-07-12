@@ -48,8 +48,9 @@ JSON_DICT_ADAPTER = TypeAdapter(JsonDict)
 AnalysisWorkflow = Literal["manual", "discovery", "scheduled"]
 AnalysisWorkflowView = Literal["manual", "discovery", "scheduled", "unknown"]
 DISCOVERY_ANALYSIS_THESIS = (
-    "가격·거래량 기반 1차 후보 발굴을 통과했다. 매수 보장이 아니므로 "
-    "실적·밸류에이션·뉴스 데이터 공백과 무효화 조건까지 심층 검토한다."
+    "전체시장의 3개년 재무 건전성, 유동성, 업종 성장과 가격 신호 선별을 통과했다. "
+    "매수 보장이 아니므로 업종의 구조적 수요, 투자 주기, 경쟁과 규제, 실적·밸류에이션·"
+    "뉴스 데이터 공백 및 전망을 무효화할 조건까지 심층 검토한다."
 )
 logger = logging.getLogger(__name__)
 

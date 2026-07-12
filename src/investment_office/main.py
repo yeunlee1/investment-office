@@ -35,6 +35,12 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from investment_office.config import LOOPBACK_HOSTS, Settings, get_settings
 from investment_office.database import DatabaseRuntime, create_database_runtime
 from investment_office.domain import AgentRole, AnalysisRunStatus, ReviewDecision, utc_now
+from investment_office.services.bulk_fundamentals import (
+    CompositeBulkFundamentalsProvider,
+    DartMultiCompanyBulkProvider,
+    SecCompanyFactsBulkProvider,
+    UnavailableBulkFundamentalsProvider,
+)
 from investment_office.services.candidate_discovery import (
     CandidateDiscoveryService,
     DiscoveryStrategy,
@@ -55,7 +61,13 @@ from investment_office.services.decision_archive import (
     DecisionArchiveNotFoundError,
     DecisionArchiveService,
 )
+from investment_office.services.discovery_jobs import (
+    DiscoveryJobNotFoundError,
+    DiscoveryJobService,
+)
 from investment_office.services.event_broker import EventBroker
+from investment_office.services.full_market_discovery import FullMarketDiscoveryService
+from investment_office.services.fundamental_screening import FundamentalGateProfile
 from investment_office.services.instrument_identity import (
     normalize_instrument,
     resolve_stored_instrument,
@@ -92,6 +104,11 @@ from investment_office.services.source_registry import (
     SourceId,
     list_source_policies,
     validate_source_configuration,
+)
+from investment_office.services.universe_catalog import (
+    CompositeUniverseCatalogProvider,
+    KrxKindUniverseCatalogProvider,
+    UsExchangeUniverseCatalogProvider,
 )
 from investment_office.services.work_items import (
     WorkItemNotFoundError,
@@ -153,12 +170,14 @@ class ScheduleAnalysisRequest(AnalyzeRequest):
 
 
 class DiscoveryScreenRequest(BaseModel):
-    """선택한 시장 스타터 유니버스의 1차 정량 선별 요청."""
+    """선택한 시장 전체 상장 원장의 다단계 후보 선별 요청."""
 
     model_config = ConfigDict(extra="forbid")
     market: MarketId = MarketId.US
     strategy: DiscoveryStrategy = DiscoveryStrategy.BALANCED
-    limit: int = Field(default=8, ge=1, le=15)
+    risk_profile: FundamentalGateProfile = FundamentalGateProfile.BALANCED
+    limit: int = Field(default=8, ge=1, le=30)
+    force_refresh: bool = False
 
 
 class DiscoveryAnalyzeRequest(BaseModel):
@@ -272,6 +291,8 @@ def create_app(
         _DEFAULT_RESEARCH_DATA
     ),
     market_overview_service: MarketOverviewService | None = None,
+    full_market_discovery_service: FullMarketDiscoveryService | None = None,
+    discovery_job_service: DiscoveryJobService | None = None,
     risk_function: RiskFunction = assess_risk,
 ) -> FastAPI:
     """운영 의존성 또는 테스트 대역으로 애플리케이션을 구성한다."""
@@ -330,6 +351,56 @@ def create_app(
             if resolved_research is not None
             else None
         )
+        resolved_full_market_discovery = full_market_discovery_service
+        if resolved_full_market_discovery is None:
+            catalog_user_agent = (
+                resolved_settings.sec_user_agent
+                or "investment-office/0.1 local-analysis"
+            )
+            universe_catalog = CompositeUniverseCatalogProvider(
+                (
+                    UsExchangeUniverseCatalogProvider(
+                        user_agent=catalog_user_agent,
+                        timeout_seconds=resolved_settings.market_data_timeout_seconds,
+                    ),
+                    KrxKindUniverseCatalogProvider(
+                        user_agent=catalog_user_agent,
+                        timeout_seconds=resolved_settings.market_data_timeout_seconds,
+                    ),
+                )
+            )
+            us_fundamentals = (
+                SecCompanyFactsBulkProvider(
+                    user_agent=resolved_settings.sec_user_agent,
+                    timeout_seconds=max(
+                        180.0,
+                        resolved_settings.market_data_timeout_seconds,
+                    ),
+                )
+                if resolved_settings.sec_user_agent
+                else UnavailableBulkFundamentalsProvider(
+                    MarketId.US,
+                    (
+                        "미국 전체시장 재무 검증에는 연락처가 포함된 "
+                        "INVESTMENT_OFFICE_SEC_USER_AGENT 설정이 필요합니다."
+                    ),
+                )
+            )
+            kr_fundamentals = DartMultiCompanyBulkProvider(
+                timeout_seconds=max(
+                    60.0,
+                    resolved_settings.market_data_timeout_seconds,
+                ),
+            )
+            resolved_full_market_discovery = FullMarketDiscoveryService(
+                universe_catalog=universe_catalog,
+                fundamentals=CompositeBulkFundamentalsProvider(
+                    (us_fundamentals, kr_fundamentals)
+                ),
+                market_data=limited_market_data,
+                max_price_concurrency=max(1, resolved_settings.max_parallel_agents),
+            )
+        resolved_discovery_jobs = discovery_job_service or DiscoveryJobService()
         resolved_market_overview = market_overview_service
         if (
             resolved_market_overview is None
@@ -365,6 +436,8 @@ def create_app(
             market_data=limited_market_data,
             max_concurrency=max(1, resolved_settings.max_parallel_agents),
         )
+        app.state.full_market_discovery = resolved_full_market_discovery
+        app.state.discovery_jobs = resolved_discovery_jobs
         app.state.decision_archive = DecisionArchiveService(storage=resolved_storage)
         app.state.scheduled_analyses = ScheduledAnalysisService(
             storage=resolved_storage,
@@ -422,6 +495,7 @@ def create_app(
             track_app_task(app, scheduler_task)
             yield
         finally:
+            await resolved_discovery_jobs.close()
             tasks: set[asyncio.Task[None]] = app.state.tasks
             for task in tuple(tasks):
                 if not task.done():
@@ -513,6 +587,12 @@ def create_app(
 
     def candidate_discovery(request: Request) -> CandidateDiscoveryService:
         return cast(CandidateDiscoveryService, request.app.state.candidate_discovery)
+
+    def full_market_discovery(request: Request) -> FullMarketDiscoveryService:
+        return cast(FullMarketDiscoveryService, request.app.state.full_market_discovery)
+
+    def discovery_jobs(request: Request) -> DiscoveryJobService:
+        return cast(DiscoveryJobService, request.app.state.discovery_jobs)
 
     def decision_archive(request: Request) -> DecisionArchiveService:
         return cast(DecisionArchiveService, request.app.state.decision_archive)
@@ -865,6 +945,35 @@ def create_app(
         task = asyncio.create_task(service.run_analysis(run.id), name=f"analysis-{run.id}")
         track_background_task(request, task)
         return {"run_id": str(run.id), "run": build_run_with_schedule(request, run.id)}
+
+    @app.post(
+        "/api/discoveries/scans",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def api_create_discovery_scan(
+        payload: DiscoveryScreenRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        runner = full_market_discovery(request).runner(
+            market=payload.market,
+            strategy=payload.strategy,
+            risk_profile=payload.risk_profile,
+            limit=payload.limit,
+            force_refresh=payload.force_refresh,
+        )
+        job_id = discovery_jobs(request).create(runner)
+        return {"job": discovery_jobs(request).get(job_id).model_dump(mode="json")}
+
+    @app.get("/api/discoveries/scans/{job_id}")
+    async def api_get_discovery_scan(
+        job_id: UUID,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            job = discovery_jobs(request).get(job_id)
+        except DiscoveryJobNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"job": job.model_dump(mode="json")}
 
     @app.post("/api/discoveries/screen")
     async def api_discovery_screen(

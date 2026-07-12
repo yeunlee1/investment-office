@@ -16,6 +16,7 @@ Market = MarketId
 
 
 class DataDomain(StrEnum):
+    REFERENCE = "reference"
     PRICE = "price"
     MACRO = "macro"
     FINANCIALS = "financials"
@@ -25,6 +26,7 @@ class DataDomain(StrEnum):
 
 class SourceId(StrEnum):
     SEC = "sec"
+    NASDAQ_TRADER = "nasdaq_trader"
     FRED = "fred"
     BLS = "bls"
     FEDERAL_RESERVE_BOARD = "federal_reserve_board"
@@ -35,9 +37,11 @@ class SourceId(StrEnum):
     YAHOO_FINANCE = "yahoo_finance"
     BOK_ECOS = "bok_ecos"
     KRX = "krx"
+    KRX_KIND = "krx_kind"
     DATA_GO_KR = "data_go_kr"
     KIS = "kis"
     DART = "dart"
+    DART_BULK = "dart_bulk"
     BIGKINDS = "bigkinds"
     NAVER_NEWS = "naver_news"
     REUTERS = "reuters"
@@ -204,6 +208,21 @@ _POLICIES: Final = (
         required_key_env_vars=("SEC_USER_AGENT",),
     ),
     _source(
+        SourceId.NASDAQ_TRADER,
+        "나스닥 트레이더 종목 디렉터리",
+        frozenset({Market.US}),
+        frozenset({DataDomain.REFERENCE}),
+        Officiality.EXCHANGE,
+        TrustLevel.HIGH,
+        LicenseScope.EXCHANGE_REFERENCE_DATA,
+        "공식 상장 종목 원장을 개인 내부 분석에 사용하며 원본 파일을 재배포하지 않습니다.",
+        SourceFreshness.INTRADAY,
+        "거래일 중 수시로 갱신되는 종목 디렉터리를 하루 한 번 로컬 캐시합니다.",
+        UseScope.ANALYSIS_ALLOWED,
+        SourcePriority.PRIMARY,
+        "https://www.nasdaqtrader.com/trader.aspx?id=symboldirdefs",
+    ),
+    _source(
         SourceId.FRED,
         "연방준비은행 경제 데이터",
         _ALL_MARKETS,
@@ -366,6 +385,21 @@ _POLICIES: Final = (
         required_key_env_vars=("KRX_API_KEY",),
     ),
     _source(
+        SourceId.KRX_KIND,
+        "한국거래소 상장법인 목록",
+        frozenset({Market.KR}),
+        frozenset({DataDomain.REFERENCE}),
+        Officiality.EXCHANGE,
+        TrustLevel.HIGH,
+        LicenseScope.EXCHANGE_REFERENCE_DATA,
+        "KOSPI와 KOSDAQ 상장법인 목록을 개인 내부 분석에 사용하고 출처를 표시합니다.",
+        SourceFreshness.END_OF_DAY,
+        "상장·상호·업종 변경을 반영하기 위해 하루 한 번 로컬 캐시를 갱신합니다.",
+        UseScope.ANALYSIS_ALLOWED,
+        SourcePriority.PRIMARY,
+        "https://kind.krx.co.kr/corpgeneral/corpList.do?method=loadInitPage",
+    ),
+    _source(
         SourceId.DATA_GO_KR,
         "공공데이터포털 금융위원회 주식시세",
         frozenset({Market.KR}),
@@ -412,6 +446,21 @@ _POLICIES: Final = (
         SourcePriority.PRIMARY,
         "https://opendart.fss.or.kr/",
         required_key_env_vars=("DART_API_KEY",),
+    ),
+    _source(
+        SourceId.DART_BULK,
+        "금융감독원 전자공시 재무정보 일괄자료",
+        frozenset({Market.KR}),
+        frozenset({DataDomain.FINANCIALS}),
+        Officiality.GOVERNMENT,
+        TrustLevel.HIGH,
+        LicenseScope.PUBLIC_OPEN_DATA,
+        "공개 연간 재무제표 묶음을 개인 내부 전체시장 선별에 사용하고 원본은 재배포하지 않습니다.",
+        SourceFreshness.END_OF_DAY,
+        "완료 사업보고서의 재무상태표·손익계산서·현금흐름표 묶음을 하루 한 번 확인합니다.",
+        UseScope.ANALYSIS_ALLOWED,
+        SourcePriority.PRIMARY,
+        "https://opendart.fss.or.kr/disclosureinfo/fnltt/dwld/main.do",
     ),
     _source(
         SourceId.BIGKINDS,

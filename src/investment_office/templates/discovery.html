@@ -10,14 +10,14 @@
       <p class="section-code">WORKSPACE / 03 / MARKET SCREENED</p>
       <h1>종목 추천</h1>
       <p>
-        선택한 시장의 완료 일봉 데이터로 주식 후보를 먼저 비교합니다. 상위 후보 중 최대 세 종목만 에이전트
-        심층 분석에 보내고, 모든 결과는 사람의 검토를 기다립니다.
+        미국은 전체 상장 보통주, 한국은 KOSPI·KOSDAQ 전체 보통주에서 시작합니다. 재무 건전성, 거래 가능성,
+        업종 모멘텀과 가격 신호를 차례로 통과한 후보만 에이전트 심층 분석에 보냅니다.
       </p>
     </div>
     <aside class="page-heading__guard">
       <span>SCREENING SCOPE</span>
-      <strong>가격·거래량 기반</strong>
-      <p>실적, 밸류에이션과 뉴스는 심층 분석 단계에서 확인합니다.</p>
+      <strong>재무 우선 다단계 필터</strong>
+      <p>전체 원장에서 시작해 자료가 확인된 후보만 남기며, 실패와 자료 공백을 정상 결과로 숨기지 않습니다.</p>
     </aside>
   </header>
 
@@ -29,38 +29,97 @@
       </div>
       <span class="section-note">자동 주문 없음</span>
     </div>
-    <ol class="stage-list">
-      <li class="stage-card" data-discovery-stage="scan" data-status="idle">
+    <ol class="stage-list" aria-label="전체시장 후보 선별과 심층 분석 단계">
+      <li class="stage-card stage-card--backend" data-discovery-stage="universe" data-status="idle" aria-busy="false">
         <span class="stage-card__number mono">01</span>
-        <div>
-          <strong>유니버스 스캔</strong>
-          <small>완료 일봉 정량 비교</small>
+        <div class="stage-card__copy">
+          <strong>전체 원장</strong>
+          <small>상장 보통주 구성</small>
         </div>
-        <output id="discovery-stage-scan-output">대기</output>
+        <output>대기</output>
+        <dl class="stage-card__telemetry" aria-label="전체 원장 처리 집계">
+          <div><dt>처리</dt><dd data-stage-field="processed">0 / —</dd></div>
+          <div><dt>통과</dt><dd data-stage-field="passed">0</dd></div>
+          <div><dt>실패</dt><dd data-stage-field="failed">0</dd></div>
+          <div><dt>캐시</dt><dd data-stage-field="cached">0</dd></div>
+        </dl>
+        <p class="stage-card__message" data-stage-message>시장 원장 대기 중</p>
       </li>
-      <li class="stage-card" data-discovery-stage="shortlist" data-status="idle">
+      <li class="stage-card stage-card--backend" data-discovery-stage="fundamentals" data-status="idle" aria-busy="false">
         <span class="stage-card__number mono">02</span>
-        <div>
-          <strong>후보 선별</strong>
-          <small>상위 후보 비교</small>
+        <div class="stage-card__copy">
+          <strong>재무 검증</strong>
+          <small>건전성·성장·감사</small>
         </div>
-        <output id="discovery-stage-shortlist-output">대기</output>
+        <output>대기</output>
+        <dl class="stage-card__telemetry" aria-label="재무 검증 처리 집계">
+          <div><dt>처리</dt><dd data-stage-field="processed">0 / —</dd></div>
+          <div><dt>통과</dt><dd data-stage-field="passed">0</dd></div>
+          <div><dt>실패</dt><dd data-stage-field="failed">0</dd></div>
+          <div><dt>캐시</dt><dd data-stage-field="cached">0</dd></div>
+        </dl>
+        <p class="stage-card__message" data-stage-message>재무 자료 대기 중</p>
       </li>
-      <li class="stage-card" data-discovery-stage="agents" data-status="idle">
+      <li class="stage-card stage-card--backend" data-discovery-stage="liquidity" data-status="idle" aria-busy="false">
         <span class="stage-card__number mono">03</span>
-        <div>
-          <strong>심층 분석</strong>
-          <small>최대 세 종목</small>
+        <div class="stage-card__copy">
+          <strong>가격·유동성</strong>
+          <small>거래대금·데이터 품질</small>
         </div>
-        <output id="discovery-stage-agents-output">대기</output>
+        <output>대기</output>
+        <dl class="stage-card__telemetry" aria-label="가격과 유동성 처리 집계">
+          <div><dt>처리</dt><dd data-stage-field="processed">0 / —</dd></div>
+          <div><dt>통과</dt><dd data-stage-field="passed">0</dd></div>
+          <div><dt>실패</dt><dd data-stage-field="failed">0</dd></div>
+          <div><dt>캐시</dt><dd data-stage-field="cached">0</dd></div>
+        </dl>
+        <p class="stage-card__message" data-stage-message>가격 자료 대기 중</p>
       </li>
-      <li class="stage-card" data-discovery-stage="review" data-status="idle">
+      <li class="stage-card stage-card--backend" data-discovery-stage="sector" data-status="idle" aria-busy="false">
         <span class="stage-card__number mono">04</span>
-        <div>
+        <div class="stage-card__copy">
+          <strong>업종 모멘텀</strong>
+          <small>가격 강도·선행 지속성</small>
+        </div>
+        <output>대기</output>
+        <dl class="stage-card__telemetry" aria-label="업종 모멘텀 처리 집계">
+          <div><dt>처리</dt><dd data-stage-field="processed">0 / —</dd></div>
+          <div><dt>통과</dt><dd data-stage-field="passed">0</dd></div>
+          <div><dt>실패</dt><dd data-stage-field="failed">0</dd></div>
+          <div><dt>캐시</dt><dd data-stage-field="cached">0</dd></div>
+        </dl>
+        <p class="stage-card__message" data-stage-message>업종 자료 대기 중</p>
+      </li>
+      <li class="stage-card stage-card--backend" data-discovery-stage="ranking" data-status="idle" aria-busy="false">
+        <span class="stage-card__number mono">05</span>
+        <div class="stage-card__copy">
+          <strong>최종 순위</strong>
+          <small>점수·위험 종합</small>
+        </div>
+        <output>대기</output>
+        <dl class="stage-card__telemetry" aria-label="최종 순위 처리 집계">
+          <div><dt>처리</dt><dd data-stage-field="processed">0 / —</dd></div>
+          <div><dt>통과</dt><dd data-stage-field="passed">0</dd></div>
+          <div><dt>실패</dt><dd data-stage-field="failed">0</dd></div>
+          <div><dt>캐시</dt><dd data-stage-field="cached">0</dd></div>
+        </dl>
+        <p class="stage-card__message" data-stage-message>종합 순위 대기 중</p>
+      </li>
+      <li class="stage-card stage-card--handoff" data-discovery-stage="agents" data-status="idle" aria-busy="false">
+        <span class="stage-card__number mono">06</span>
+        <div class="stage-card__copy">
+          <strong>에이전트 분석</strong>
+          <small>선택 종목 심층 검토</small>
+        </div>
+        <output>대기</output>
+      </li>
+      <li class="stage-card stage-card--handoff" data-discovery-stage="review" data-status="idle" aria-busy="false">
+        <span class="stage-card__number mono">07</span>
+        <div class="stage-card__copy">
           <strong>사람 검토</strong>
           <small>최종 판단 대기</small>
         </div>
-        <output id="discovery-stage-review-output">대기</output>
+        <output>대기</output>
       </li>
     </ol>
   </section>
@@ -79,10 +138,10 @@
         <div class="field-group">
           <label for="discovery-market">탐색 시장</label>
           <select id="discovery-market" name="market">
-            <option value="us">미국 시장 · 대형주 유니버스</option>
-            <option value="kr">한국 시장 · 대표주 유니버스</option>
+            <option value="us">미국 · 전체 상장 보통주</option>
+            <option value="kr">한국 · KOSPI·KOSDAQ 전체 보통주</option>
           </select>
-          <small>시장별 유니버스와 가격 공급원을 분리해 비교합니다.</small>
+          <small>시장 전체 원장을 먼저 구성한 뒤 자료 품질과 재무 기준으로 줄입니다.</small>
         </div>
         <div class="field-group">
           <label for="discovery-strategy">비교 전략</label>
@@ -93,8 +152,17 @@
           </select>
           <small>전략은 정량 점수의 가중치만 바꾸며 매수를 보장하지 않습니다.</small>
         </div>
+        <div class="field-group">
+          <label for="discovery-risk-profile">위험성향</label>
+          <select id="discovery-risk-profile" name="risk_profile">
+            <option value="defensive">안정형 · 현금흐름과 변동성 엄격</option>
+            <option value="balanced" selected>균형형 · 품질과 성장의 균형</option>
+            <option value="aggressive">공격형 · 성장주·소형주 후보 확대</option>
+          </select>
+          <small>공격형도 감사·자본·유동성의 최소 안전 기준은 생략하지 않습니다.</small>
+        </div>
         <p id="discovery-feedback" class="form-feedback" role="status" aria-live="polite">
-          시장과 전략을 선택해 주식 유니버스를 스캔하세요.
+          시장, 비교 전략과 위험성향을 선택해 전체 상장 보통주 스캔을 시작하세요.
         </p>
         <button class="button button--primary button--wide" type="submit">
           <span>추천 후보 스캔</span>
@@ -106,25 +174,30 @@
         <div>
           <dt>UNIVERSE</dt>
           <dd id="discovery-universe" class="mono">—</dd>
-          <small>전체 비교</small>
+          <small>보통주 후보</small>
         </div>
         <div>
-          <dt>QUALIFIED</dt>
-          <dd id="discovery-qualified" class="mono">—</dd>
-          <small>기준 통과</small>
+          <dt>FUNDAMENTALS</dt>
+          <dd id="discovery-fundamentals" class="mono">—</dd>
+          <small>재무 통과</small>
+        </div>
+        <div>
+          <dt>LIQUIDITY</dt>
+          <dd id="discovery-liquidity" class="mono">—</dd>
+          <small>가격·유동성 통과</small>
         </div>
         <div>
           <dt>SHORTLIST</dt>
           <dd id="discovery-shortlist" class="mono">—</dd>
-          <small>화면 후보</small>
+          <small>최종 후보</small>
         </div>
       </dl>
 
       <aside class="method-note">
         <span class="method-note__mark" aria-hidden="true">!</span>
         <div>
-          <strong>1차 결과의 범위</strong>
-          <p>가격, 추세, 변동성과 거래량을 비교합니다. 기업 가치와 최신 이슈는 다음 단계에서 검증합니다.</p>
+          <strong>근거가 있는 후보만 표시</strong>
+          <p>재무 건전성, 성장성, 거래대금, 업종 모멘텀, 매출 가속도·마진·현금창출력과 차트 신호를 단계별로 확인합니다. 공급원 장애와 자료 부족은 별도 경고로 남깁니다.</p>
         </div>
       </aside>
     </article>
@@ -172,5 +245,5 @@
 {% endblock %}
 
 {% block scripts %}
-  <script type="module" src="/static/discovery.js?v=6"></script>
+  <script type="module" src="/static/discovery.js?v=7"></script>
 {% endblock %}

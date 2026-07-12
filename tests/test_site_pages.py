@@ -13,6 +13,7 @@ HISTORY = (TEMPLATES / "history.html").read_text(encoding="utf-8")
 ANALYSIS_SCRIPT = (STATIC / "analysis.js").read_text(encoding="utf-8")
 MARKETS_SCRIPT = (STATIC / "markets.js").read_text(encoding="utf-8")
 HISTORY_SCRIPT = (STATIC / "history.js").read_text(encoding="utf-8")
+CHART_DESK_SCRIPT = (STATIC / "chart-desk.js").read_text(encoding="utf-8")
 DISCOVERY_SCRIPT = (STATIC / "discovery.js").read_text(encoding="utf-8")
 COMMON_SCRIPT = (STATIC / "site-common.js").read_text(encoding="utf-8")
 STYLES = (STATIC / "site.css").read_text(encoding="utf-8")
@@ -32,7 +33,7 @@ def test_site_uses_summary_hub_and_four_clear_pages() -> None:
         "hub-recent-runs",
     ):
         assert f'id="{field_id}"' in HUB
-    assert 'src="/static/hub.js?v=4"' in HUB
+    assert 'src="/static/hub.js?v=5"' in HUB
 
 
 def test_individual_page_exposes_all_site_operations() -> None:
@@ -64,7 +65,7 @@ def test_individual_page_exposes_all_site_operations() -> None:
     assert 'setAttribute("aria-valuenow"' in ANALYSIS_SCRIPT
     assert 'type="submit" data-review-decision=' not in ANALYSIS
     assert ANALYSIS.count('type="button" data-review-decision=') == 3
-    assert 'src="/static/analysis.js?v=4"' in ANALYSIS
+    assert 'src="/static/analysis.js?v=5"' in ANALYSIS
     assert "{ market, ticker, thesis }" in ANALYSIS_SCRIPT
     assert "{ market, ticker, scheduled_for:" in ANALYSIS_SCRIPT
 
@@ -92,6 +93,26 @@ def test_individual_page_connects_every_existing_operation_api() -> None:
     assert "state.committee?.session_id !== sessionId" in ANALYSIS_SCRIPT
 
 
+def test_chart_desk_is_accessible_and_responsive() -> None:
+    assert 'id="decision-chart-analysis"' in ANALYSIS
+    assert "차트 분석팀" in ANALYSIS
+    assert 'from "./chart-desk.js?v=5"' in ANALYSIS_SCRIPT
+    assert "export function renderChartDesk" in CHART_DESK_SCRIPT
+    assert 'target.setAttribute("role", "region")' in CHART_DESK_SCRIPT
+    assert 'target.setAttribute("aria-label", title)' in CHART_DESK_SCRIPT
+    assert "chart.support_levels" in CHART_DESK_SCRIPT
+    assert "chart.resistance_levels" in CHART_DESK_SCRIPT
+    assert "chart.invalidation_levels" in CHART_DESK_SCRIPT
+    assert "chart.as_of_date" in CHART_DESK_SCRIPT
+    assert "chart.observations" in CHART_DESK_SCRIPT
+    assert "chart.weekly_observations" in CHART_DESK_SCRIPT
+    assert "lens.adaptation_notice" in CHART_DESK_SCRIPT
+    assert "lens.metrics" in CHART_DESK_SCRIPT
+    assert ".chart-desk__lens-grid" in STYLES
+    assert ".chart-desk__metrics," in STYLES
+    assert "grid-template-columns: minmax(0, 1fr);" in STYLES
+
+
 def test_history_page_filters_and_lazily_loads_saved_detail() -> None:
     for field_id in (
         "history-filter-form",
@@ -103,7 +124,7 @@ def test_history_page_filters_and_lazily_loads_saved_detail() -> None:
         "history-detail",
     ):
         assert f'id="{field_id}"' in HISTORY
-    assert 'src="/static/history.js?v=4"' in HISTORY
+    assert 'src="/static/history.js?v=5"' in HISTORY
     assert "`${API.runs}?limit=200`" in HISTORY_SCRIPT
     for contract in (
         "API.run(runId)",
@@ -118,6 +139,8 @@ def test_history_page_filters_and_lazily_loads_saved_detail() -> None:
     assert '.catch(() => ({ tasks: [] }))' not in HISTORY_SCRIPT
     assert "preventScroll: true" in HISTORY_SCRIPT
     assert "payload.run_id === state.selectedRunId" in HISTORY_SCRIPT
+    assert 'from "./chart-desk.js?v=5"' in HISTORY_SCRIPT
+    assert "decision.chart_analysis" in HISTORY_SCRIPT
     hub_script = (STATIC / "hub.js").read_text(encoding="utf-8")
     assert 'summary?.by_status' in hub_script
     assert "preventScroll: true" in hub_script
@@ -145,6 +168,7 @@ def test_new_site_source_files_start_with_korean_role_headers() -> None:
         "analysis.js",
         "discovery.js",
         "history.js",
+        "chart-desk.js",
     )
     for name in source_files:
         first_line = (STATIC / name).read_text(encoding="utf-8").splitlines()[0]
@@ -173,7 +197,7 @@ def test_market_control_room_exposes_cross_market_quality_contract() -> None:
     assert "requestJson(API.dataSources)" in MARKETS_SCRIPT
     assert 'Promise.allSettled' in MARKETS_SCRIPT
     assert 'quality?.macro_eligible === true' in MARKETS_SCRIPT
-    assert 'src="/static/markets.js?v=4"' in MARKETS
+    assert 'src="/static/markets.js?v=5"' in MARKETS
     assert 'href="/static/markets.css?v=3"' in MARKETS
 
 

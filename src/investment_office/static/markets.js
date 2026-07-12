@@ -11,7 +11,7 @@ import {
   setButtonBusy,
   setText,
   startSiteOperation,
-} from "./site-common.js?v=4";
+} from "./site-common.js?v=5";
 
 const elements = {
   generatedAt: document.querySelector("#markets-generated-at"),

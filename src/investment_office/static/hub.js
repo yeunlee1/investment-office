@@ -12,7 +12,7 @@ import {
   initSiteShell,
   requestJson,
   setText,
-} from "./site-common.js?v=4";
+} from "./site-common.js?v=5";
 
 const elements = {
   total: document.querySelector("#hub-total"),

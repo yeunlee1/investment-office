@@ -12,6 +12,8 @@ from typing import Final, cast
 import httpx
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
+from investment_office.services.chart_analysis import PriceBar
+
 YAHOO_CHART_URL: Final = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
 YAHOO_FALLBACK_CHART_URL: Final = "https://query2.finance.yahoo.com/v8/finance/chart/{ticker}"
 _REQUEST_HEADERS: Final = {
@@ -85,11 +87,13 @@ class EODSnapshot(BaseModel):
     low_52_week: float | None
     average_volume_20d: float | None
     data_gaps: list[str] = Field(default_factory=list)
+    raw_bars: tuple[PriceBar, ...] = Field(default=(), exclude=True, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
 class _EODBar:
     timestamp: int
+    open: float | None
     close: float
     high: float | None
     low: float | None
@@ -252,6 +256,7 @@ class YahooFinanceClient:
         if not quote_sets:
             raise InsufficientMarketDataError("Yahoo Finance 응답에 일봉 시세 배열이 없습니다.")
         quote = _require_mapping(quote_sets[0], "indicators.quote[0]")
+        opens = _optional_sequence(quote.get("open"))
         closes = _require_sequence(quote.get("close"), "indicators.quote[0].close")
         highs = _optional_sequence(quote.get("high"))
         lows = _optional_sequence(quote.get("low"))
@@ -266,6 +271,10 @@ class YahooFinanceClient:
         bars: list[_EODBar] = []
         missing_close_count = 0
         missing_adjusted_count = 0
+        missing_open_count = 0
+        missing_high_count = 0
+        missing_low_count = 0
+        missing_volume_count = 0
         for index, timestamp_value in enumerate(timestamps):
             timestamp = _optional_int(timestamp_value)
             raw_close = _optional_float(_sequence_item(closes, index))
@@ -278,14 +287,21 @@ class YahooFinanceClient:
                 adjusted_close = raw_close
                 missing_adjusted_count += 1
             adjustment_factor = adjusted_close / raw_close
+            raw_open = _optional_float(_sequence_item(opens, index))
             raw_high = _optional_float(_sequence_item(highs, index))
             raw_low = _optional_float(_sequence_item(lows, index))
             volume = _optional_float(_sequence_item(volumes, index))
+            adjusted_open = raw_open * adjustment_factor if raw_open is not None else None
             high = raw_high * adjustment_factor if raw_high is not None else None
             low = raw_low * adjustment_factor if raw_low is not None else None
+            missing_open_count += adjusted_open is None
+            missing_high_count += high is None
+            missing_low_count += low is None
+            missing_volume_count += volume is None
             bars.append(
                 _EODBar(
                     timestamp=timestamp,
+                    open=adjusted_open,
                     close=adjusted_close,
                     high=high,
                     low=low,
@@ -303,6 +319,14 @@ class YahooFinanceClient:
             gaps.append(
                 f"조정 종가가 없는 일봉 {missing_adjusted_count}개는 원 종가를 사용했습니다."
             )
+        if missing_open_count:
+            gaps.append(f"시가가 없는 일봉이 {missing_open_count}개 있습니다.")
+        if missing_high_count:
+            gaps.append(f"고가가 없는 일봉이 {missing_high_count}개 있습니다.")
+        if missing_low_count:
+            gaps.append(f"저가가 없는 일봉이 {missing_low_count}개 있습니다.")
+        if missing_volume_count:
+            gaps.append(f"거래량이 없는 일봉이 {missing_volume_count}개 있습니다.")
         return bars, gaps
 
     @staticmethod
@@ -353,6 +377,17 @@ class YahooFinanceClient:
 
         # 미국 정규장 일봉 타임스탬프는 UTC에서도 거래일과 같은 날짜다.
         as_of_date = datetime.fromtimestamp(bars[-1].timestamp, UTC).date()
+        raw_bars = tuple(
+            PriceBar(
+                trade_date=datetime.fromtimestamp(bar.timestamp, UTC).date(),
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+                volume=bar.volume,
+            )
+            for bar in bars
+        )
         return EODSnapshot(
             ticker=ticker,
             exchange=exchange,
@@ -378,6 +413,7 @@ class YahooFinanceClient:
             low_52_week=low_52_week,
             average_volume_20d=average_volume,
             data_gaps=list(dict.fromkeys(data_gaps)),
+            raw_bars=raw_bars,
         )
 
     def _aware_now(self) -> datetime:

@@ -58,6 +58,7 @@ class FakeSnapshot(BaseModel):
     low_52_week: float = 150.0
     average_volume_20d: float = 25_000_000
     data_gaps: list[str] = []
+    raw_bars: tuple[object, ...] = ()
     currency: str = "USD"
     source_url: str = "https://query1.finance.yahoo.com/v8/finance/chart/AAPL"
 
@@ -397,6 +398,13 @@ async def test_analysis_api_returns_202_then_supports_query_and_single_review() 
             assert completed["progress"] == 100
             assert len(completed["agents"]) == 6
             assert completed["decision"]["auto_trade"] is False
+            chart_analysis = completed["decision"]["chart_analysis"]
+            assert chart_analysis["ticker"] == "AAPL"
+            assert chart_analysis["state"] == "insufficient_data"
+            technical = next(
+                agent for agent in completed["agents"] if agent["role"] == "technical"
+            )
+            assert technical["result"]["chart_analysis"] == chart_analysis
 
             review_payload = {
                 "decision": "approved",

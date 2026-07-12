@@ -55,6 +55,8 @@ class FakeSnapshot(BaseModel):
     ticker: str = "AAPL"
     exchange: str = "NMS"
     as_of: str = "2026-07-10"
+    as_of_date: date = date(2026, 7, 10)
+    raw_bars: tuple[object, ...] = ()
     close: float = 215.0
     previous_close: float = 212.0
     currency: str = "USD"
@@ -198,6 +200,7 @@ class FakeProvider:
     def __init__(self, *, fail_role: str | None = None) -> None:
         self.fail_role = fail_role
         self.calls: list[tuple[str, str, int]] = []
+        self.requests: list[dict[str, Any]] = []
 
     async def analyze(
         self,
@@ -207,6 +210,13 @@ class FakeProvider:
         context: list[dict[str, Any]],
     ) -> dict[str, Any]:
         self.calls.append((role, ticker, len(context)))
+        self.requests.append(
+            {
+                "role": role,
+                "snapshot": snapshot,
+                "context": context,
+            }
+        )
         if role == self.fail_role:
             raise RuntimeError(f"{role} 분석 실패")
         stance = "bullish" if role in {"bull", "head_trader"} else "neutral"
@@ -497,6 +507,19 @@ async def test_six_agent_analysis_then_human_review_state(
     }
     outputs_by_role = {output.role: output for output in outputs}
     assert outputs_by_role[AgentRole.TECHNICAL].evidence == []
+    market_snapshot = storage.list_snapshots(run.id, kind=SnapshotKind.MARKET_DATA)[0]
+    chart_analysis = market_snapshot.data["chart_analysis"]
+    assert chart_analysis["ticker"] == "AAPL"
+    assert chart_analysis["state"] == "insufficient_data"
+    assert "raw_bars" not in market_snapshot.data
+    assert outputs_by_role[AgentRole.TECHNICAL].data["chart_analysis"] == chart_analysis
+    for role in ("bull", "bear", "head_trader"):
+        request = next(item for item in provider.requests if item["role"] == role)
+        assert any(
+            item.get("role") == "technical"
+            and item.get("data", {}).get("chart_analysis") == chart_analysis
+            for item in request["context"]
+        )
     for role in (AgentRole.FUNDAMENTAL, AgentRole.NEWS):
         output = outputs_by_role[role]
         assert output.confidence == 0.0
@@ -511,6 +534,7 @@ async def test_six_agent_analysis_then_human_review_state(
     assert draft["decision"]["auto_trade"] is False
     assert draft["decision"]["risk_eligible"] is False
     assert draft["decision"]["position_cap_pct"] == 0.0
+    assert draft["decision"]["chart_analysis"] == chart_analysis
 
     review = await committee.record_review(run.id, decision, "리스크 조건을 확인해 기록한다.")
 

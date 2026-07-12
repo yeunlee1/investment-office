@@ -27,6 +27,7 @@ from investment_office.domain import (
     SnapshotKind,
     utc_now,
 )
+from investment_office.services.chart_analysis import analyze_chart
 from investment_office.services.codex_provider import reconstruct_evidence
 from investment_office.services.event_broker import EventBroker
 from investment_office.services.instrument_identity import (
@@ -50,6 +51,79 @@ DISCOVERY_ANALYSIS_THESIS = (
     "실적·밸류에이션·뉴스 데이터 공백과 무효화 조건까지 심층 검토한다."
 )
 logger = logging.getLogger(__name__)
+
+_TECHNICAL_INPUT_FIELDS = (
+    "current_close",
+    "previous_close",
+    "close",
+    "return_1d_pct",
+    "return_5d_pct",
+    "return_20d_pct",
+    "return_60d_pct",
+    "sma_20",
+    "sma_50",
+    "sma_200",
+    "rsi_14",
+    "atr_14",
+    "volatility_20d_pct",
+    "high_52_week",
+    "low_52_week",
+    "average_volume_20d",
+)
+
+
+def technical_input_is_missing(snapshot: dict[str, Any]) -> bool:
+    """차트 보고서와 가격 지표가 모두 없을 때만 기술 입력 부족으로 판단한다."""
+
+    chart = snapshot.get("chart_analysis")
+    if isinstance(chart, dict):
+        observations = chart.get("observations")
+        if (
+            isinstance(observations, int)
+            and not isinstance(observations, bool)
+            and observations > 0
+        ):
+            return False
+    return not any(
+        isinstance(snapshot.get(field), (int, float))
+        and not isinstance(snapshot.get(field), bool)
+        for field in _TECHNICAL_INPUT_FIELDS
+    )
+
+
+def build_technical_data_gap_result(ticker: str) -> dict[str, Any]:
+    """완전히 비어 있는 차트 입력을 중립 결과로 고정한다."""
+
+    data_gap = "검증 가능한 완료 일봉과 차트 분석 입력이 없습니다."
+    return {
+        "role": AgentRole.TECHNICAL.value,
+        "ticker": ticker,
+        "stance": "neutral",
+        "confidence": 0.0,
+        "summary": f"{data_gap} 차트 방향성 판단을 중립으로 고정합니다.",
+        "key_points": ["입력 없는 차트 패턴이나 가격 레벨을 만들지 않았습니다."],
+        "evidence": [],
+        "risks": ["가격 자료 없이 setup을 만들면 투자 판단이 왜곡될 수 있습니다."],
+        "recommendation": "완료 일봉 자료가 공급될 때까지 차트 판단을 보류합니다.",
+        "data_gaps": [data_gap],
+        "invalidations": ["완료 일봉과 서버 계산 차트 보고서가 공급되면 다시 분석합니다."],
+    }
+
+
+def attach_chart_analysis(
+    role: AgentRole | str,
+    snapshot: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """검증된 기술 결과에 서버가 계산한 원본 차트 보고서를 다시 부착한다."""
+
+    normalized_role = role.value if isinstance(role, AgentRole) else role
+    chart = snapshot.get("chart_analysis")
+    if normalized_role != AgentRole.TECHNICAL.value or not isinstance(chart, dict):
+        return result
+    attached = dict(result)
+    attached["chart_analysis"] = JSON_DICT_ADAPTER.validate_python(chart)
+    return attached
 
 
 class AnalysisProvider(Protocol):
@@ -329,12 +403,19 @@ class InvestmentCommittee:
             market_snapshot = await self.market_data.fetch_eod_snapshot(
                 instrument.storage_ticker
             )
+            chart_analysis = analyze_chart(
+                instrument.symbol,
+                market_snapshot.as_of_date,
+                market_snapshot.raw_bars,
+            )
             market_payload = market_snapshot.model_dump(mode="json")
+            market_payload.pop("raw_bars", None)
             market_payload.update(
                 {
                     "market": instrument.market.value,
                     "canonical_id": instrument.canonical_id,
                     "local_symbol": instrument.symbol,
+                    "chart_analysis": chart_analysis.model_dump(mode="json"),
                 }
             )
             if self.research_data is not None:
@@ -448,6 +529,7 @@ class InvestmentCommittee:
                 risk_payload,
                 research_quality=market_payload.get("research_quality"),
                 market_regime=market_payload.get("market_regime"),
+                chart_analysis=market_payload.get("chart_analysis"),
             )
             self.storage.save_snapshot(
                 Snapshot(
@@ -712,6 +794,9 @@ class InvestmentCommittee:
             validated["evidence"] = JSON_DICT_ADAPTER.validate_python(
                 {"evidence": grounded_evidence}
             )["evidence"]
+            validated = JSON_DICT_ADAPTER.validate_python(
+                attach_chart_analysis(role, snapshot, validated)
+            )
             evidence = [
                 Evidence.model_validate(
                     {
@@ -777,6 +862,8 @@ class InvestmentCommittee:
 
     @staticmethod
     def _role_input_is_missing(role: AgentRole, snapshot: dict[str, Any]) -> bool:
+        if role is AgentRole.TECHNICAL:
+            return technical_input_is_missing(snapshot)
         required_key = {
             AgentRole.FUNDAMENTAL: "fundamentals",
             AgentRole.NEWS: "news",
@@ -870,6 +957,8 @@ class InvestmentCommittee:
 
     @staticmethod
     def _data_gap_result(role: AgentRole, ticker: str) -> dict[str, Any]:
+        if role is AgentRole.TECHNICAL:
+            return build_technical_data_gap_result(ticker)
         source_name = "재무·공시" if role is AgentRole.FUNDAMENTAL else "뉴스"
         data_gap = f"검증 가능한 {source_name} 원문과 출처가 입력되지 않았습니다."
         return {
@@ -968,6 +1057,7 @@ class InvestmentCommittee:
         *,
         research_quality: object = None,
         market_regime: object = None,
+        chart_analysis: object = None,
     ) -> dict[str, Any]:
         instrument = InvestmentCommittee._candidate_instrument(candidate)
         stance = str(chairman.get("stance", "neutral"))
@@ -1022,6 +1112,7 @@ class InvestmentCommittee:
             "position_cap_pct": position_cap_pct,
             "research_quality": research_quality,
             "market_regime": market_regime,
+            "chart_analysis": chart_analysis,
             "human_approval_required": True,
             "auto_trade": False,
         }

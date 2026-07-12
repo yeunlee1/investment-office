@@ -19,7 +19,7 @@ import {
   setText,
   startSiteOperation,
   statusInfo,
-} from "./site-common.js?v=4";
+} from "./site-common.js?v=5";
 
 const elements = {
   screenForm: document.querySelector("#discovery-screen-form"),

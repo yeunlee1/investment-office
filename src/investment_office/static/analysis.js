@@ -23,7 +23,8 @@ import {
   setText,
   startSiteOperation,
   statusInfo,
-} from "./site-common.js?v=4";
+} from "./site-common.js?v=5";
+import { renderChartDesk } from "./chart-desk.js?v=5";
 
 const elements = {
   analysisForm: document.querySelector("#individual-analysis-form"),
@@ -84,6 +85,7 @@ const elements = {
   decisionRecommendation: document.querySelector("#decision-recommendation"),
   decisionConfidence: document.querySelector("#decision-confidence"),
   decisionSummary: document.querySelector("#decision-summary"),
+  decisionChartAnalysis: document.querySelector("#decision-chart-analysis"),
   decisionPoints: document.querySelector("#decision-points"),
   decisionRisks: document.querySelector("#decision-risks"),
   reviewForm: document.querySelector("#review-form"),
@@ -325,7 +327,7 @@ function renderAgents(agents) {
     elements.agentStrip?.append(stripItem);
 
     const report = createElement("details", "agent-report");
-    if (agent.role === "head_trader") report.open = true;
+    if (["technical", "head_trader"].includes(agent.role)) report.open = true;
     const summary = createElement("summary", "agent-report__summary");
     summary.append(createElement("strong", "", roleLabel(agent.role)));
     appendStatusBadge(summary, agent.status);
@@ -334,6 +336,12 @@ function renderAgents(agents) {
     report.append(createElement("p", "agent-report__lead", agent.summary || agent.error || "보고 내용이 없습니다."));
 
     const result = asObject(agent.result);
+    if (agent.role === "technical" && Object.keys(asObject(result.chart_analysis)).length) {
+      const chartPanel = createElement("section", "chart-desk");
+      chartPanel.setAttribute("aria-label", "차트 분석팀 상세 결과");
+      renderChartDesk(chartPanel, result.chart_analysis, { title: "차트 분석팀 판정" });
+      report.append(chartPanel);
+    }
     const points = asArray(result.key_points).slice(0, 6);
     const risks = asArray(result.risks).slice(0, 6);
     if (points.length || risks.length) {
@@ -388,6 +396,14 @@ function renderTasks(tasks) {
     const progress = asObject(task.progress);
     const storedReport = state.taskReports.get(task.id);
     if (Object.keys(result).length || Object.keys(progress).length || storedReport) {
+      const storedResult = asObject(asObject(storedReport).result);
+      const chartResult = asObject(storedResult.chart_analysis || result.chart_analysis);
+      if (task.role === "technical" && Object.keys(chartResult).length) {
+        const chartPanel = createElement("section", "chart-desk");
+        chartPanel.setAttribute("aria-label", "차트 분석팀 수동 업무 결과");
+        renderChartDesk(chartPanel, chartResult, { title: "추가 차트 점검", compact: true });
+        item.append(chartPanel);
+      }
       const output = createElement("pre", "task-card__output");
       const outputValue = storedReport || (Object.keys(result).length ? result : progress);
       output.textContent = JSON.stringify(outputValue, null, 2);
@@ -518,6 +534,10 @@ function renderDecision(run) {
     [riskGateSummary, decision.summary].filter(Boolean).join(" "),
     "분석 완료 후 위원장 초안이 표시됩니다.",
   );
+  renderChartDesk(elements.decisionChartAnalysis, decision.chart_analysis, {
+    title: "결정 참고 차트",
+    compact: true,
+  });
   renderTextList(elements.decisionPoints, decision.key_points, "핵심 근거 대기 중입니다.");
   renderTextList(elements.decisionRisks, decision.risks, "위험 신호 대기 중입니다.");
 

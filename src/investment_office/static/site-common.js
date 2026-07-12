@@ -725,7 +725,7 @@ export function workflowInfo(workflow) {
 export function roleLabel(role) {
   return {
     fundamental: "기본면",
-    technical: "기술",
+    technical: "차트 분석팀",
     news: "뉴스",
     sentiment: "심리",
     bull: "강세 논리",

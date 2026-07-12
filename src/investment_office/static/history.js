@@ -19,7 +19,8 @@ import {
   setText,
   startSiteOperation,
   workflowInfo,
-} from "./site-common.js?v=4";
+} from "./site-common.js?v=5";
+import { renderChartDesk } from "./chart-desk.js?v=5";
 
 const elements = {
   filterForm: document.querySelector("#history-filter-form"),
@@ -253,6 +254,14 @@ function renderDetail({ run, tasks, committee, minutes, archive }) {
         : "";
     const summary = [riskGateSummary, decision.summary].filter(Boolean).join(" ");
     decisionSection.append(verdict, createElement("p", "", summary || "요약 없음"));
+    const chartPanel = createElement("section", "chart-desk");
+    chartPanel.setAttribute("aria-label", "저장된 차트 분석팀 결과");
+    if (renderChartDesk(chartPanel, decision.chart_analysis, {
+      title: "저장된 결정 참고 차트",
+      compact: true,
+    })) {
+      decisionSection.append(chartPanel);
+    }
     appendTwoLists(decisionSection, "핵심 근거", decision.key_points, "주요 리스크", decision.risks);
   } else {
     decisionSection.append(createElement("p", "empty-state", "이 실행에는 저장된 결정 초안이 없습니다."));

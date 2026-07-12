@@ -304,6 +304,15 @@ async def test_tiingo_provider_uses_adjusted_bars_and_header_auth_without_secret
     assert snapshot.exchange == "NASDAQ"
     assert snapshot.source_url.startswith("https://api.tiingo.com/tiingo/daily/AAPL/prices")
     assert secret not in snapshot.source_url
+    assert [bar.trade_date for bar in snapshot.raw_bars] == [
+        date(2024, 1, 2),
+        date(2024, 1, 3),
+    ]
+    assert snapshot.raw_bars[0].open == 49.0
+    assert snapshot.raw_bars[0].high == 52.0
+    assert snapshot.raw_bars[0].low == 48.0
+    assert snapshot.raw_bars[0].close == 50.0
+    assert snapshot.raw_bars[0].volume == 1_000_000.0
 
 
 @pytest.mark.asyncio
@@ -512,6 +521,11 @@ async def test_default_gateway_fetches_and_computes_korea_eod_snapshot() -> None
     assert snapshot.source_url.startswith("https://apis.data.go.kr/")
     assert "encoded" not in snapshot.source_url
     assert any("조정주가가 아니므로" in gap for gap in snapshot.data_gaps)
+    assert len(snapshot.raw_bars) == 260
+    assert snapshot.raw_bars[0].trade_date == date(2024, 1, 2)
+    assert snapshot.raw_bars[-1].trade_date == date(2024, 9, 17)
+    assert snapshot.raw_bars[0].open == 99.0
+    assert "raw_bars" not in snapshot.model_dump(mode="json")
 
 
 @pytest.mark.asyncio
@@ -537,6 +551,10 @@ async def test_korea_yahoo_provider_selects_kospi_from_exchange_hint() -> None:
     assert snapshot.currency == "KRW"
     assert snapshot.timezone == "Asia/Seoul"
     assert snapshot.current_close == 70_300.0
+    assert snapshot.raw_bars[0].open == pytest.approx(69_500 * (69_800 / 70_000))
+    assert snapshot.raw_bars[0].high == pytest.approx(70_500 * (69_800 / 70_000))
+    assert snapshot.raw_bars[0].low == pytest.approx(69_000 * (69_800 / 70_000))
+    assert snapshot.raw_bars[0].close == 69_800.0
     assert any("조정주가 적용 방식" in gap for gap in snapshot.data_gaps)
     assert any("시장 구분" in gap for gap in snapshot.data_gaps)
 
@@ -758,6 +776,10 @@ def test_pure_snapshot_reports_invalid_and_missing_values_as_data_gaps() -> None
     )
 
     assert snapshot.observations == 2
+    assert len(snapshot.raw_bars) == 2
+    assert snapshot.raw_bars[0].trade_date < snapshot.raw_bars[1].trade_date
+    assert snapshot.raw_bars[1].high is None
+    assert snapshot.raw_bars[1].volume is None
     assert any("1개를 제외" in gap for gap in snapshot.data_gaps)
     assert any("고가가 없는 일봉" in gap for gap in snapshot.data_gaps)
     assert any("거래량이 없는 일봉" in gap for gap in snapshot.data_gaps)

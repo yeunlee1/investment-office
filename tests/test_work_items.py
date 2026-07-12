@@ -25,6 +25,13 @@ from investment_office.services.work_items import (
 )
 from investment_office.storage import InMemoryStorage
 
+CHART_ANALYSIS = {
+    "ticker": "AAPL",
+    "observations": 80,
+    "state": "mixed",
+    "composite_score": 54.0,
+}
+
 
 class GateProvider:
     def __init__(self, *, fail_first: bool = False, block_first: bool = False) -> None:
@@ -98,6 +105,7 @@ def make_service(
                     ),
                     "close": 215.0,
                     "source_url": "https://query1.finance.yahoo.com/v8/finance/chart/AAPL",
+                    "chart_analysis": CHART_ANALYSIS,
                 },
             )
         )
@@ -197,6 +205,8 @@ async def test_same_run_and_role_executes_only_one_item_then_next_queue_item() -
     assert first_result is not None
     assert first_result.id == first.id
     assert first_result.status is WorkItemStatus.COMPLETED
+    assert first_result.result is not None
+    assert first_result.result["chart_analysis"] == CHART_ANALYSIS
     assert provider.calls[0]["snapshot"]["close"] == 215.0
     assert provider.calls[0]["snapshot"]["source_url"].startswith("https://query1")
     manual_request = provider.calls[0]["context"][-1]["manual_work_request"]
@@ -209,6 +219,44 @@ async def test_same_run_and_role_executes_only_one_item_then_next_queue_item() -
     assert second_result.status is WorkItemStatus.COMPLETED
     assert provider.max_active == 1
     assert len(provider.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_technical_work_input_returns_neutral_data_gap_without_provider() -> None:
+    provider = GateProvider()
+    service, storage, _, run = make_service(provider, with_market_snapshot=False)
+    storage.save_snapshot(
+        Snapshot(
+            candidate_id=run.candidate_id,
+            analysis_run_id=run.id,
+            kind=SnapshotKind.MARKET_DATA,
+            data={
+                "ticker": "AAPL",
+                "chart_analysis": {
+                    **CHART_ANALYSIS,
+                    "observations": 0,
+                    "state": "insufficient_data",
+                },
+            },
+        )
+    )
+    await service.create_work_item(
+        run_id=run.id,
+        role=AgentRole.TECHNICAL,
+        title="빈 차트 입력 확인",
+        instructions="없는 가격 근거를 만들지 않는다.",
+    )
+
+    completed = await service.run_next(run.id, AgentRole.TECHNICAL)
+
+    assert completed is not None
+    assert completed.status is WorkItemStatus.COMPLETED
+    assert completed.result is not None
+    assert completed.result["stance"] == "neutral"
+    assert completed.result["confidence"] == 0.0
+    assert completed.result["data_gaps"]
+    assert completed.result["chart_analysis"]["observations"] == 0
+    assert provider.calls == []
 
 
 @pytest.mark.asyncio

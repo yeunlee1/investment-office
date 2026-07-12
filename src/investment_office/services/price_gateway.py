@@ -774,6 +774,7 @@ def _parse_tiingo_bars(
             duplicate_dates += 1
         bars_by_date[trade_date] = _EODBar(
             timestamp=timestamp,
+            open=adjusted_open,
             close=close,
             high=high,
             low=low,
@@ -887,6 +888,7 @@ def build_kr_eod_snapshot(
     bars = [
         _EODBar(
             timestamp=int(datetime.combine(bar.trade_date, time.min, tzinfo=UTC).timestamp()),
+            open=bar.open,
             close=bar.close,
             high=bar.high,
             low=bar.low,

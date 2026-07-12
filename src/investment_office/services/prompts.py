@@ -49,8 +49,11 @@ ANALYSIS_OUTPUT_SCHEMA: dict[str, Any] = {
 
 _ROLE_INSTRUCTIONS = {
     "technical": (
-        "가격, 거래량, 추세, 모멘텀, 변동성, 지지와 저항만 평가한다. "
-        "지표가 입력에 없으면 계산하거나 추정하지 않는다."
+        "서버가 계산해 제공한 chart_analysis와 가격·거래량 지표만 차트 분석 렌즈로 "
+        "평가한다. 입력 수치를 다시 계산하거나 보정·조작하지 않는다. 추세·모멘텀·"
+        "변동성 렌즈가 충돌하면 어느 렌즈가 왜 다른지 분리해 적고, 돌파형 setup과 "
+        "눌림목형 setup을 섞지 않는다. 제공된 레벨은 관찰 기준으로만 사용하며, "
+        "입력이 완전히 부족하면 방향성을 중립으로 두고 data_gaps에 기록한다."
     ),
     "fundamental": (
         "매출, 이익률, 현금흐름, 재무상태, 성장률, 밸류에이션을 평가한다. "
@@ -89,6 +92,8 @@ _ROLE_ALIASES = {
     "market": "technical",
     "market_analyst": "technical",
     "technical_analyst": "technical",
+    "chart": "technical",
+    "chart_analyst": "technical",
     "taro": "technical",
     "fundamentals": "fundamental",
     "fundamentals_analyst": "fundamental",

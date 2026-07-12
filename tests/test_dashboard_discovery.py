@@ -23,7 +23,7 @@ def test_discovery_page_exposes_stock_recommendation_pipeline() -> None:
         assert f'id="{field_id}"' in TEMPLATE
     for stage in ("scan", "shortlist", "agents", "review"):
         assert f'data-discovery-stage="{stage}"' in TEMPLATE
-    assert 'src="/static/discovery.js?v=4"' in TEMPLATE
+    assert 'src="/static/discovery.js?v=5"' in TEMPLATE
 
 
 def test_discovery_page_uses_server_history_instead_of_browser_only_state() -> None:

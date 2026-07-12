@@ -226,7 +226,7 @@
       </p>
       <ol id="agent-strip" class="agent-strip" aria-label="분석 에이전트 상태">
         <li class="agent-chip" data-status="idle">기본면</li>
-        <li class="agent-chip" data-status="idle">기술</li>
+        <li class="agent-chip" data-status="idle">차트 분석팀</li>
         <li class="agent-chip" data-status="idle">뉴스</li>
         <li class="agent-chip" data-status="idle">BULL</li>
         <li class="agent-chip" data-status="idle">BEAR</li>
@@ -328,7 +328,7 @@
               <label for="task-role">담당 역할</label>
               <select id="task-role" name="role" required>
                 <option value="fundamental">기본면 분석가</option>
-                <option value="technical">기술 분석가</option>
+                <option value="technical">차트 분석팀</option>
                 <option value="news">뉴스 분석가</option>
                 <option value="bull">BULL 연구원</option>
                 <option value="bear">BEAR 연구원</option>
@@ -392,7 +392,7 @@
               <fieldset class="participant-fieldset">
                 <legend>참석 역할</legend>
                 <label><input name="committee-participant" type="checkbox" value="fundamental" checked />기본면</label>
-                <label><input name="committee-participant" type="checkbox" value="technical" checked />기술</label>
+                <label><input name="committee-participant" type="checkbox" value="technical" checked />차트 분석팀</label>
                 <label><input name="committee-participant" type="checkbox" value="news" checked />뉴스</label>
                 <label><input name="committee-participant" type="checkbox" value="bull" checked />BULL</label>
                 <label><input name="committee-participant" type="checkbox" value="bear" checked />BEAR</label>
@@ -424,7 +424,7 @@
               <label class="sr-only" for="committee-command-role">추가 발언 역할</label>
               <select id="committee-command-role" name="role">
                 <option value="fundamental">기본면</option>
-                <option value="technical">기술</option>
+                <option value="technical">차트 분석팀</option>
                 <option value="news">뉴스</option>
                 <option value="bull">BULL</option>
                 <option value="bear">BEAR</option>
@@ -495,6 +495,12 @@
             <p id="decision-summary" class="decision-card__summary">
               분석이 완료되면 핵심 결론이 표시됩니다.
             </p>
+            <section
+              id="decision-chart-analysis"
+              class="chart-desk chart-desk--decision"
+              aria-label="차트 분석팀 결정 참고"
+              hidden
+            ></section>
             <div class="decision-columns">
               <section aria-labelledby="decision-points-title">
                 <h5 id="decision-points-title">핵심 근거</h5>
@@ -544,5 +550,5 @@
 {% endblock %}
 
 {% block scripts %}
-  <script type="module" src="/static/analysis.js?v=4"></script>
+  <script type="module" src="/static/analysis.js?v=5"></script>
 {% endblock %}

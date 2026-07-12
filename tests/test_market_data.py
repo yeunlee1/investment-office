@@ -20,6 +20,7 @@ from investment_office.services.market_data import (
 def _chart_payload(
     closes: list[float | None],
     *,
+    adjusted_closes: list[float | None] | None = None,
     start_timestamp: int = 1_704_110_400,
     exchange: str = "NMS",
     currency: str = "USD",
@@ -60,7 +61,7 @@ def _chart_payload(
                                 "volume": volumes,
                             }
                         ],
-                        "adjclose": [{"adjclose": closes}],
+                        "adjclose": [{"adjclose": adjusted_closes or closes}],
                     },
                 }
             ],
@@ -107,7 +108,46 @@ async def test_fetch_eod_snapshot_computes_expected_metrics() -> None:
     assert snapshot.low_52_week == 106.0
     assert snapshot.average_volume_20d == 1_000_249.5
     assert snapshot.data_gaps == []
-    assert snapshot.model_dump(mode="json")["as_of_date"] == "2024-09-16"
+    assert len(snapshot.raw_bars) == 260
+    assert snapshot.raw_bars[0].trade_date < snapshot.raw_bars[-1].trade_date
+    assert snapshot.raw_bars[0].open == 99.0
+    dumped = snapshot.model_dump(mode="json")
+    assert dumped["as_of_date"] == "2024-09-16"
+    assert "raw_bars" not in dumped
+    assert "raw_bars" not in repr(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_raw_bars_preserve_adjusted_open_and_missing_values_in_date_order() -> None:
+    payload = _chart_payload(
+        [200.0, 202.0, 204.0],
+        adjusted_closes=[100.0, 101.0, 102.0],
+    )
+    quote = payload["chart"]["result"][0]["indicators"]["quote"][0]
+    quote["open"][1] = None
+    quote["high"][1] = None
+    quote["volume"][1] = None
+    http_client = _mock_client(payload)
+    try:
+        snapshot = await YahooFinanceClient(client=http_client).fetch_eod_snapshot("AAPL")
+    finally:
+        await http_client.aclose()
+
+    assert [bar.trade_date for bar in snapshot.raw_bars] == sorted(
+        bar.trade_date for bar in snapshot.raw_bars
+    )
+    assert snapshot.raw_bars[0].open == 99.5
+    assert snapshot.raw_bars[0].high == 101.0
+    assert snapshot.raw_bars[0].low == 99.0
+    assert snapshot.raw_bars[0].close == 100.0
+    assert snapshot.raw_bars[1].open is None
+    assert snapshot.raw_bars[1].high is None
+    assert snapshot.raw_bars[1].low == 100.0
+    assert snapshot.raw_bars[1].close == 101.0
+    assert snapshot.raw_bars[1].volume is None
+    assert any("시가가 없는 일봉" in gap for gap in snapshot.data_gaps)
+    assert any("고가가 없는 일봉" in gap for gap in snapshot.data_gaps)
+    assert any("거래량이 없는 일봉" in gap for gap in snapshot.data_gaps)
 
 
 @pytest.mark.asyncio

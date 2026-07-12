@@ -28,7 +28,12 @@ from investment_office.domain import (
 )
 from investment_office.services.event_broker import EventBroker
 from investment_office.services.instrument_identity import resolve_stored_instrument
-from investment_office.services.orchestrator import AnalysisProvider
+from investment_office.services.orchestrator import (
+    AnalysisProvider,
+    attach_chart_analysis,
+    build_technical_data_gap_result,
+    technical_input_is_missing,
+)
 from investment_office.storage import Storage
 
 JsonDict = dict[str, JsonValue]
@@ -324,13 +329,22 @@ class CommitteeBroker:
             )
 
             try:
-                result = await self.provider.analyze(
-                    normalized_role.value,
-                    meeting.ticker,
-                    self._market_snapshot(run_id),
-                    self._provider_context(meeting, normalized_instruction),
+                provider_snapshot = self._market_snapshot(run_id)
+                if (
+                    normalized_role is AgentRole.TECHNICAL
+                    and technical_input_is_missing(provider_snapshot)
+                ):
+                    result = build_technical_data_gap_result(meeting.ticker)
+                else:
+                    result = await self.provider.analyze(
+                        normalized_role.value,
+                        meeting.ticker,
+                        provider_snapshot,
+                        self._provider_context(meeting, normalized_instruction),
+                    )
+                validated = JSON_DICT_ADAPTER.validate_python(
+                    attach_chart_analysis(normalized_role, provider_snapshot, result)
                 )
-                validated = JSON_DICT_ADAPTER.validate_python(result)
                 confidence = self._confidence(validated.get("confidence"))
                 evidence = self._evidence_from_result(validated)
                 committee_meta = output.data["committee"]

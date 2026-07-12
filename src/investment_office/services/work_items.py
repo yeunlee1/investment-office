@@ -31,7 +31,12 @@ from investment_office.domain import (
 )
 from investment_office.services.event_broker import EventBroker
 from investment_office.services.instrument_identity import resolve_stored_instrument
-from investment_office.services.orchestrator import AnalysisProvider
+from investment_office.services.orchestrator import (
+    AnalysisProvider,
+    attach_chart_analysis,
+    build_technical_data_gap_result,
+    technical_input_is_missing,
+)
 from investment_office.storage import Storage
 
 STATE_RECORD_TYPE = "manual_work_item"
@@ -299,13 +304,21 @@ class WorkItemService:
                 candidate.ticker,
                 candidate.attributes,
             ).symbol
-            raw_result = await self.provider.analyze(
-                resolved_role.value,
-                provider_ticker,
-                provider_snapshot,
-                provider_context,
+            if (
+                resolved_role is AgentRole.TECHNICAL
+                and technical_input_is_missing(provider_snapshot)
+            ):
+                raw_result = build_technical_data_gap_result(provider_ticker)
+            else:
+                raw_result = await self.provider.analyze(
+                    resolved_role.value,
+                    provider_ticker,
+                    provider_snapshot,
+                    provider_context,
+                )
+            result = JSON_OBJECT_ADAPTER.validate_python(
+                attach_chart_analysis(resolved_role, provider_snapshot, raw_result)
             )
-            result = JSON_OBJECT_ADAPTER.validate_python(raw_result)
         except asyncio.CancelledError:
             await self._finish_cancelled_execution(run.id, running.id, resolved_role)
             raise

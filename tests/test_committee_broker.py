@@ -31,6 +31,12 @@ from investment_office.storage import InMemoryStorage
 
 NOW = datetime(2026, 7, 11, 3, 0, tzinfo=UTC)
 SOURCE_URL = "https://example.com/market-snapshot"
+CHART_ANALYSIS = {
+    "ticker": "AAPL",
+    "observations": 80,
+    "state": "mixed",
+    "composite_score": 54.0,
+}
 
 
 class FakeProvider:
@@ -109,6 +115,7 @@ def seed_completed_run(
                 ),
                 "close": 215.0,
                 "source_url": SOURCE_URL,
+                "chart_analysis": CHART_ANALYSIS,
             },
             captured_at=NOW,
         )
@@ -318,6 +325,30 @@ async def test_directed_speak_calls_only_selected_role_and_respects_turn_cap() -
 
     with pytest.raises(CommitteeValidationError, match="최대 발언"):
         await broker.directed_speak(run.id, AgentRole.FUNDAMENTAL, "한 번 더 말해줘.")
+
+
+@pytest.mark.asyncio
+async def test_directed_chart_speech_reuses_stored_chart_analysis() -> None:
+    storage = InMemoryStorage()
+    run = seed_completed_run(storage, include_roles=(AgentRole.TECHNICAL,))
+    provider = FakeProvider()
+    broker = CommitteeBroker(storage=storage, provider=provider)
+    await broker.start_meeting(
+        run.id,
+        topic="차트 신호 재확인",
+        roles=[AgentRole.TECHNICAL],
+        max_turns=2,
+    )
+
+    await broker.directed_speak(
+        run.id,
+        AgentRole.TECHNICAL,
+        "저장된 차트 판정의 상충 신호를 다시 설명해줘.",
+    )
+
+    assert provider.calls[0]["snapshot"]["chart_analysis"] == CHART_ANALYSIS
+    saved = storage.list_agent_outputs(run.id, role=AgentRole.TECHNICAL)
+    assert saved[-1].data["chart_analysis"] == CHART_ANALYSIS
 
 
 @pytest.mark.asyncio
